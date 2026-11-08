@@ -6,9 +6,10 @@
  * 4. Grabbing active image from img2img Forge Canvas
  * 5. Interactive Preview Image (pure event delegation, no MutationObserver):
  *    - Mouse Wheel Zoom (1.0x - 8.0x) centered on cursor
- *    - Drag to Pan (when zoomed in or with middle mouse button)
- *    - Persistent zoom/pan across mask preview updates (via capture-phase 'load')
+ *    - Native browser <img> dragstart blocked so Drag-to-Pan never misfires as a click
+ *    - Space + Drag / Middle-Drag / Zoomed Left-Drag to Pan with strict click suppression
  *    - Right-Click directly on preview image to Exclude
+ *    - Ctrl + Z keyboard shortcut for Undo when the SAM3 Mask tab is active
  */
 (function () {
   function getRoot() {
@@ -188,8 +189,10 @@
   }
 
   // =========================================================================
-  // Interactive Preview Controller (Pure Event Delegation, No MutationObserver)
+  // Interactive Preview Controller (Zoom, Pan, Right-Click Exclude, Ctrl+Z)
   // =========================================================================
+  const PAN_THRESHOLD_PX = 3;
+
   const zoomState = {
     scale: 1,
     tx: 0,
@@ -197,6 +200,7 @@
     naturalW: 0,
     naturalH: 0,
     dragging: false,
+    spaceHeld: false,
     startX: 0,
     startY: 0,
     startTx: 0,
@@ -218,6 +222,20 @@
   function insidePreview(target) {
     if (!target || !(target instanceof Element)) return false;
     return Boolean(target.closest("#sam3_ms_preview_image"));
+  }
+
+  function isTypingTarget(el) {
+    if (!el || !(el instanceof Element)) return false;
+    const tag = (el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      // Radio and checkbox inputs are not text entry fields
+      if (type === "radio" || type === "checkbox" || type === "button") {
+        return false;
+      }
+      return true;
+    }
+    return Boolean(el.isContentEditable);
   }
 
   function ensureZoomBadge(container) {
@@ -253,23 +271,34 @@
     zoomState.ty = Math.min(0, Math.max(minTy, zoomState.ty));
   }
 
+  function updateCursor(img) {
+    if (!img) return;
+    if (zoomState.dragging) {
+      img.style.cursor = "grabbing";
+    } else if (zoomState.spaceHeld) {
+      img.style.cursor = "grab";
+    } else {
+      img.style.cursor = "crosshair";
+    }
+  }
+
   function applyTransform() {
     const container = getPreviewContainer();
     const img = getPreviewImg();
     if (!container || !img) return;
 
+    img.setAttribute("draggable", "false");
     clampPan();
     img.style.transformOrigin = "0 0";
     if (zoomState.scale <= 1.001) {
       if (img.style.transform !== "") img.style.transform = "";
-      img.style.cursor = "crosshair";
     } else {
       const nextTransform = `translate(${zoomState.tx}px, ${zoomState.ty}px) scale(${zoomState.scale})`;
       if (img.style.transform !== nextTransform) {
         img.style.transform = nextTransform;
       }
-      img.style.cursor = zoomState.dragging ? "grabbing" : "crosshair";
     }
+    updateCursor(img);
 
     const badge = ensureZoomBadge(container);
     const pct = Math.round(zoomState.scale * 100);
@@ -287,6 +316,8 @@
     zoomState.scale = 1;
     zoomState.tx = 0;
     zoomState.ty = 0;
+    zoomState.dragging = false;
+    zoomState.suppressNextClick = false;
     applyTransform();
   }
 
@@ -294,11 +325,24 @@
     if (window._sam3MaskStudioDelegatedInstalled) return;
     window._sam3MaskStudioDelegatedInstalled = true;
 
+    // Prevent native HTML5 image drag-and-drop inside preview so panning never gets hijacked
+    document.addEventListener(
+      "dragstart",
+      function (e) {
+        if (insidePreview(e.target)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      },
+      true
+    );
+
     document.addEventListener(
       "load",
       function (e) {
         const t = e.target;
         if (!t || t.tagName !== "IMG" || !insidePreview(t)) return;
+        t.setAttribute("draggable", "false");
         if (
           zoomState.naturalW &&
           zoomState.naturalH &&
@@ -343,56 +387,87 @@
       { passive: false }
     );
 
-    // 2. Drag to Pan (Left-button when zoomed in, or Middle-button anytime)
-    document.addEventListener("mousedown", function (e) {
-      if (!insidePreview(e.target)) return;
-      const currentImg = getPreviewImg();
-      if (!currentImg) return;
-      if (e.button === 1 || (e.button === 0 && zoomState.scale > 1.001)) {
-        zoomState.dragging = true;
-        zoomState.startX = e.clientX;
-        zoomState.startY = e.clientY;
-        zoomState.startTx = zoomState.tx;
-        zoomState.startTy = zoomState.ty;
+    // 2. Drag to Pan (Middle-button, Space + Left-button, or Left-button when zoomed in)
+    document.addEventListener(
+      "mousedown",
+      function (e) {
+        if (!insidePreview(e.target)) return;
+        const currentImg = getPreviewImg();
+        if (!currentImg) return;
+
         zoomState.movedDist = 0;
-        if (e.button === 1) {
-          e.preventDefault();
+        if (
+          e.button === 1 ||
+          (e.button === 0 && (zoomState.spaceHeld || zoomState.scale > 1.001))
+        ) {
+          zoomState.dragging = true;
+          zoomState.startX = e.clientX;
+          zoomState.startY = e.clientY;
+          zoomState.startTx = zoomState.tx;
+          zoomState.startTy = zoomState.ty;
+          if (e.button === 1 || zoomState.spaceHeld) {
+            zoomState.suppressNextClick = true;
+            e.preventDefault();
+          }
         }
-      }
-    });
+      },
+      true
+    );
 
-    window.addEventListener("mousemove", function (e) {
-      if (!zoomState.dragging) return;
-      const dx = e.clientX - zoomState.startX;
-      const dy = e.clientY - zoomState.startY;
-      zoomState.movedDist = Math.hypot(dx, dy);
-      if (zoomState.movedDist > 4) {
-        zoomState.tx = zoomState.startTx + dx;
-        zoomState.ty = zoomState.startTy + dy;
+    window.addEventListener(
+      "mousemove",
+      function (e) {
+        if (!zoomState.dragging) return;
+        const dx = e.clientX - zoomState.startX;
+        const dy = e.clientY - zoomState.startY;
+        const dist = Math.hypot(dx, dy);
+        if (dist > zoomState.movedDist) {
+          zoomState.movedDist = dist;
+        }
+        if (zoomState.movedDist >= PAN_THRESHOLD_PX) {
+          zoomState.suppressNextClick = true;
+          zoomState.tx = zoomState.startTx + dx;
+          zoomState.ty = zoomState.startTy + dy;
+          applyTransform();
+        }
+      },
+      true
+    );
+
+    window.addEventListener(
+      "mouseup",
+      function () {
+        if (!zoomState.dragging) return;
+        const wasPanning =
+          zoomState.movedDist >= PAN_THRESHOLD_PX || zoomState.spaceHeld;
+        zoomState.dragging = false;
         applyTransform();
-      }
-    });
 
-    window.addEventListener("mouseup", function () {
-      if (!zoomState.dragging) return;
-      if (zoomState.movedDist > 5) {
-        zoomState.suppressNextClick = true;
-        setTimeout(() => {
-          zoomState.suppressNextClick = false;
-        }, 80);
-      }
-      zoomState.dragging = false;
-      applyTransform();
-    });
+        if (wasPanning) {
+          zoomState.suppressNextClick = true;
+          setTimeout(() => {
+            zoomState.suppressNextClick = false;
+          }, 250);
+        }
+      },
+      true
+    );
 
-    // Suppress Gradio .select() click if the user just dragged to pan
+    // Strictly block Gradio .select() click when finishing a pan drag or holding Space
     document.addEventListener(
       "click",
       function (e) {
         if (!insidePreview(e.target)) return;
-        if (zoomState.suppressNextClick && !e._sam3SyntheticRightClick) {
+        if (
+          (zoomState.suppressNextClick ||
+            zoomState.spaceHeld ||
+            zoomState.movedDist >= PAN_THRESHOLD_PX) &&
+          !e._sam3SyntheticRightClick
+        ) {
           zoomState.suppressNextClick = false;
+          zoomState.movedDist = 0;
           e.stopPropagation();
+          e.stopImmediatePropagation();
           e.preventDefault();
         }
       },
@@ -416,6 +491,11 @@
       if (!currentImg || !currentImg.contains(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
+
+      if (zoomState.movedDist >= PAN_THRESHOLD_PX) {
+        zoomState.movedDist = 0;
+        return;
+      }
 
       const cx = e.clientX;
       const cy = e.clientY;
@@ -450,6 +530,48 @@
           }, 160);
         }
       }, 35);
+    });
+
+    // 4. Keyboard shortcuts: Ctrl+Z -> Undo, Space -> Safe Pan Mode
+    document.addEventListener("keydown", function (e) {
+      if (isTypingTarget(e.target)) return;
+      const container = getPreviewContainer();
+      if (!container || container.offsetParent === null) return;
+
+      if (e.code === "Space" && !zoomState.spaceHeld) {
+        zoomState.spaceHeld = true;
+        updateCursor(getPreviewImg());
+      }
+
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === "z" || e.key === "Z")
+      ) {
+        const root = getRoot();
+        const undoBtn = root ? root.querySelector("#sam3_ms_undo_btn") : null;
+        if (undoBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          undoBtn.click();
+        }
+      }
+    });
+
+    document.addEventListener("keyup", function (e) {
+      if (e.code === "Space" && zoomState.spaceHeld) {
+        zoomState.spaceHeld = false;
+        updateCursor(getPreviewImg());
+      }
+    });
+
+    window.addEventListener("blur", function () {
+      if (zoomState.spaceHeld || zoomState.dragging) {
+        zoomState.spaceHeld = false;
+        zoomState.dragging = false;
+        updateCursor(getPreviewImg());
+      }
     });
   }
 

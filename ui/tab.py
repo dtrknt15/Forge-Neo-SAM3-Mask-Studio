@@ -131,7 +131,7 @@ def build_tab(
                         elem_id="sam3_ms_invert_btn",
                     )
                     undo_btn = gr.Button(
-                        "Undo",
+                        "Undo (Ctrl+Z)",
                         size="sm",
                         scale=1,
                         elem_id="sam3_ms_undo_btn",

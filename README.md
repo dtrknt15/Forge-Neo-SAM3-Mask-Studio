@@ -21,14 +21,14 @@ Standalone **SAM3 (Segment Anything Model 3)** mask creation, interactive refine
   - **Left-Click** on the preview image: Add region (or follow selected Click Mode).
   - **Right-Click** on the preview image: Immediately **Exclude (subtract)** region without leaving your cursor position.
   - **Mouse Wheel**: Zoom in/out (`100%` – `800%`) centered at the cursor; zoom & pan position persist across clicks so you can refine tiny details effortlessly.
-  - **Drag**: Pan the zoomed preview image (or middle-mouse drag at any zoom); **Double-Click** or click **Reset Zoom** to return to `100%`.
+  - **Drag / Space + Drag**: Pan the zoomed preview image (`Space + Drag` or `Middle-Drag` pans safely without ever triggering a click); **Double-Click** or click **Reset Zoom** to return to `100%`.
 - **Unified Set-Operation Engine**:
   $$\text{final\_mask} = (\text{base\_mask} \cup \text{positive\_prompts} \cup \text{positive\_clicks}) \setminus (\text{negative\_prompts} \cup \text{negative\_clicks})$$
 - **Mask Refinement**:
   - **Invert Mask**: One-click full mask inversion (`0 <-> 255`); subsequent clicks/prompts naturally add to or subtract from the inverted mask.
   - **Grow / Shrink (px)**: Elliptical morphological dilation/erosion (`-64` to `+64` px).
   - **Detection Score Threshold**: Fine-tune SAM3 text detection sensitivity (`0.05` – `0.95`).
-  - **Multi-Step Undo**: Full state snapshot history across prompts, clicks, inversion, and clear.
+  - **Multi-Step Undo (`Ctrl + Z`)**: Full state snapshot history across prompts, clicks, inversion, and clear.
 - **One-Click Import & Output**:
   - **Load Image from img2img**: Pull the current image from `img2img` directly into SAM3 Mask Studio.
   - **Send to Inpaint upload**: Transfers both the original image and the generated mask into `img2img -> Inpaint upload` and switches directly to the `Inpaint upload` sub-tab.
@@ -73,12 +73,12 @@ This extension uses WebUI's standard `localizations/*.json` mechanism:
   - **左クリック**: クリックした領域をマスクに追加（または選択中のクリックモードに従う）
   - **右クリック**: モードを切り替えずに、その場の対象を即座に **除外（くり抜き）**
   - **マウスホイール**: カーソル位置を中心に **100%〜800% 拡大・縮小**（拡大したまま連続クリックしてもズーム位置が維持されます）
-  - **ドラッグ移動**: 拡大中のドラッグ（または中ボタンドラッグ）で画面移動。**ダブルクリック** または **「拡大リセット」** で 100% 表示に復帰します。
+  - **ドラッグ移動（`Space + ドラッグ` / 中ボタンドラッグ対応）**: 拡大中のドラッグ（または `Space` キーを押しながらドラッグ／中ボタンドラッグ）でクリック誤爆なしに画面移動。**ダブルクリック** または **「拡大リセット」** で 100% 表示に復帰します。
 - **マスク調整・反転・アンドゥ**:
   - **マスクを反転**: 現在のマスク範囲をワンクリックで反転（反転した状態に対して、さらにクリック追加／除外を重ねられます）。
   - **拡張 / 縮小 (px)**: `-64px 〜 +64px` の楕円カーネルによる境界の拡張・収縮。
   - **検出スコア閾値**: テキストプロンプトの検出感度を `0.05 〜 0.95` で調整可能。
-  - **元に戻す (Undo)**: プロンプト・クリック・反転・クリアを含む操作履歴（直近10件）をスナップショット復元。
+  - **元に戻す (`Ctrl + Z`)**: プロンプト・クリック・反転・クリアを含む操作履歴（直近10件）をスナップショット復元。
 - **ワンクリック入出力**:
   - **img2img から画像を取得**: `img2img` 上の画像をワンクリックで読み込み。
   - **Inpaint upload へ転送**: 元画像とマスクを `img2img` の `Inpaint upload` へ同時セットし、直接 `Inpaint upload` タブへジャンプします。

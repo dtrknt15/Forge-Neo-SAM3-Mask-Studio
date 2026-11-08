@@ -3,16 +3,22 @@
   position: relative;
   overflow: hidden !important;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 #sam3_ms_preview_image .image-container,
 #sam3_ms_preview_image button {
   overflow: hidden !important;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #sam3_ms_preview_image img {
   cursor: crosshair;
   will-change: transform;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 
 .sam3-ms-zoom-badge {
