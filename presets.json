@@ -1,0 +1,22 @@
+[
+  {
+    "name": "full_body",
+    "positive": ["person"],
+    "negative": []
+  },
+  {
+    "name": "face",
+    "positive": ["face"],
+    "negative": ["hair"]
+  },
+  {
+    "name": "hair",
+    "positive": ["hair"],
+    "negative": ["face", "skin"]
+  },
+  {
+    "name": "background",
+    "positive": ["background"],
+    "negative": ["person"]
+  }
+]

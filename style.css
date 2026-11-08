@@ -1,0 +1,43 @@
+/* SAM3 Mask Studio styles for zoomable preview & compact toolbar */
+#sam3_ms_preview_image {
+  position: relative;
+  overflow: hidden !important;
+  user-select: none;
+}
+
+#sam3_ms_preview_image .image-container,
+#sam3_ms_preview_image button {
+  overflow: hidden !important;
+}
+
+#sam3_ms_preview_image img {
+  cursor: crosshair;
+  will-change: transform;
+}
+
+.sam3-ms-zoom-badge {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 25;
+  background: rgba(20, 24, 32, 0.82);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  display: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.sam3-ms-zoom-badge:hover {
+  background: rgba(45, 115, 220, 0.92);
+}
+
+#sam3_ms_preview_mode_row,
+#sam3_ms_preview_actions_row {
+  margin-top: 4px !important;
+  gap: 6px !important;
+}
