@@ -23,7 +23,7 @@ Standalone **SAM3 (Segment Anything Model 3)** mask creation, interactive refine
   - **Mouse Wheel**: Zoom in/out (`100%` – `800%`) centered at the cursor; zoom & pan position persist across clicks so you can refine tiny details effortlessly.
   - **Drag / Space + Drag**: Pan the zoomed preview image (`Space + Drag` or `Middle-Drag` pans safely without ever triggering a click); **Double-Click** or click **Reset Zoom** to return to `100%`.
 - **Unified Set-Operation Engine**:
-  $$\text{final\_mask} = (\text{base\_mask} \cup \text{positive\_prompts} \cup \text{positive\_clicks}) \setminus (\text{negative\_prompts} \cup \text{negative\_clicks})$$
+  - `final_mask = (base_mask ∪ positive_prompts ∪ positive_clicks) \ (negative_prompts ∪ negative_clicks)`
 - **Mask Refinement**:
   - **Invert Mask**: One-click full mask inversion (`0 <-> 255`); subsequent clicks/prompts naturally add to or subtract from the inverted mask.
   - **Grow / Shrink (px)**: Elliptical morphological dilation/erosion (`-64` to `+64` px).
