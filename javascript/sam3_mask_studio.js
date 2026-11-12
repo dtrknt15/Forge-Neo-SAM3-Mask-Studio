@@ -387,13 +387,251 @@
       { passive: false }
     );
 
-    // 2. Drag to Pan (Middle-button, Space + Left-button, or Left-button when zoomed in)
+    // 2. Shift+Drag Box Select & Drag to Pan (Middle-button, Space + Left-button, or Left-button when zoomed in)
+    const boxState = {
+      active: false,
+      startX: 0,
+      startY: 0,
+      curX: 0,
+      curY: 0,
+      overlayEl: null,
+    };
+
+    function ensureBoxOverlay() {
+      if (boxState.overlayEl && document.body.contains(boxState.overlayEl)) {
+        return boxState.overlayEl;
+      }
+      const el = document.createElement("div");
+      el.id = "sam3_ms_box_overlay";
+      el.style.position = "fixed";
+      el.style.border = "2px dashed #00c8ff";
+      el.style.background = "rgba(0, 200, 255, 0.14)";
+      el.style.pointerEvents = "none";
+      el.style.zIndex = "99999";
+      el.style.display = "none";
+      document.body.appendChild(el);
+      boxState.overlayEl = el;
+      return el;
+    }
+
+    function updateBoxOverlay(x0, y0, x1, y1) {
+      const el = ensureBoxOverlay();
+      const left = Math.min(x0, x1);
+      const top = Math.min(y0, y1);
+      const width = Math.abs(x1 - x0);
+      const height = Math.abs(y1 - y0);
+      el.style.left = left + "px";
+      el.style.top = top + "px";
+      el.style.width = width + "px";
+      el.style.height = height + "px";
+      el.style.display = width >= 2 && height >= 2 ? "block" : "none";
+    }
+
+    function hideBoxOverlay() {
+      if (boxState.overlayEl) {
+        boxState.overlayEl.style.display = "none";
+      }
+    }
+
+    function getRenderedImageRect(img) {
+      const rect = img.getBoundingClientRect();
+      const natW = img.naturalWidth || 0;
+      const natH = img.naturalHeight || 0;
+      if (!natW || !natH || rect.width <= 0 || rect.height <= 0) {
+        return rect;
+      }
+      const natRatio = natW / natH;
+      const boxRatio = rect.width / rect.height;
+      let renderedW = rect.width;
+      let renderedH = rect.height;
+      let offsetX = 0;
+      let offsetY = 0;
+      if (boxRatio > natRatio) {
+        renderedH = rect.height;
+        renderedW = rect.height * natRatio;
+        offsetX = (rect.width - renderedW) * 0.5;
+      } else {
+        renderedW = rect.width;
+        renderedH = rect.width / natRatio;
+        offsetY = (rect.height - renderedH) * 0.5;
+      }
+      return {
+        left: rect.left + offsetX,
+        top: rect.top + offsetY,
+        right: rect.left + offsetX + renderedW,
+        bottom: rect.top + offsetY + renderedH,
+        width: renderedW,
+        height: renderedH,
+      };
+    }
+
+    function submitBoxPayload(img, cX0, cY0, cX1, cY1) {
+      if (!img) return;
+      const rect = getRenderedImageRect(img);
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      const natW = img.naturalWidth || rect.width;
+      const natH = img.naturalHeight || rect.height;
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const rx0 = clamp(((Math.min(cX0, cX1) - rect.left) / rect.width) * natW, 0, natW);
+      const ry0 = clamp(((Math.min(cY0, cY1) - rect.top) / rect.height) * natH, 0, natH);
+      const rx1 = clamp(((Math.max(cX0, cX1) - rect.left) / rect.width) * natW, 0, natW);
+      const ry1 = clamp(((Math.max(cY0, cY1) - rect.top) / rect.height) * natH, 0, natH);
+      if (rx1 - rx0 < 3 || ry1 - ry0 < 3) return;
+
+      const root = getRoot();
+      const ta = root ? root.querySelector("#sam3_ms_box_payload textarea, #sam3_ms_box_payload input") : null;
+      if (!ta) return;
+      ta.value = JSON.stringify({
+        x0: Math.round(rx0),
+        y0: Math.round(ry0),
+        x1: Math.round(rx1),
+        y1: Math.round(ry1),
+        width: natW,
+        height: natH,
+        ts: Date.now(),
+      });
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const brushState = {
+      active: false,
+      erase: false,
+      radius: 20,
+      points: [],
+      canvasEl: null,
+      ctx: null,
+    };
+
+    function getBrushModeInfo() {
+      const root = getRoot();
+      if (!root) return { active: false, erase: false, radius: 20 };
+      const modeContainer = root.querySelector("#sam3_ms_click_mode");
+      const inputs = modeContainer ? modeContainer.querySelectorAll("input[type=radio]") : null;
+      let idx = -1;
+      if (inputs) {
+        for (let i = 0; i < inputs.length; i++) {
+          if (inputs[i].checked) {
+            idx = i;
+            break;
+          }
+        }
+      }
+      if (idx !== 2 && idx !== 3) {
+        return { active: false, erase: false, radius: 20 };
+      }
+      const sizeInput = root.querySelector("#sam3_ms_brush_size input[type=number], #sam3_ms_brush_size input[type=range]");
+      const radius = sizeInput ? Math.max(2, Number(sizeInput.value) || 20) : 20;
+      return { active: true, erase: idx === 3, radius: radius };
+    }
+
+    function ensureBrushCanvas() {
+      if (brushState.canvasEl && document.body.contains(brushState.canvasEl)) {
+        return brushState.canvasEl;
+      }
+      const cvs = document.createElement("canvas");
+      cvs.id = "sam3_ms_brush_canvas";
+      cvs.style.position = "fixed";
+      cvs.style.left = "0";
+      cvs.style.top = "0";
+      cvs.style.width = "100vw";
+      cvs.style.height = "100vh";
+      cvs.style.pointerEvents = "none";
+      cvs.style.zIndex = "99998";
+      cvs.style.display = "none";
+      document.body.appendChild(cvs);
+      brushState.canvasEl = cvs;
+      brushState.ctx = cvs.getContext("2d");
+      return cvs;
+    }
+
+    function startBrushOverlay(img, x, y, erase, radius) {
+      const cvs = ensureBrushCanvas();
+      cvs.width = window.innerWidth;
+      cvs.height = window.innerHeight;
+      cvs.style.display = "block";
+      const rect = getRenderedImageRect(img);
+      const natW = img.naturalWidth || rect.width || 1;
+      const scale = rect.width / natW;
+      const ctx = brushState.ctx;
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      ctx.strokeStyle = erase ? "rgba(255, 70, 70, 0.7)" : "rgba(0, 210, 255, 0.7)";
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = Math.max(2, radius * 2 * scale);
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, radius * scale), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    }
+
+    function extendBrushOverlay(x, y) {
+      if (!brushState.ctx) return;
+      brushState.ctx.lineTo(x, y);
+      brushState.ctx.stroke();
+    }
+
+    function finishBrushOverlay(img) {
+      if (brushState.canvasEl) {
+        brushState.canvasEl.style.display = "none";
+      }
+      if (!img || brushState.points.length === 0) return;
+      const rect = getRenderedImageRect(img);
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      const natW = img.naturalWidth || rect.width;
+      const natH = img.naturalHeight || rect.height;
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const pts = brushState.points.map((pt) => [
+        Math.round(clamp(((pt[0] - rect.left) / rect.width) * natW, 0, natW - 1)),
+        Math.round(clamp(((pt[1] - rect.top) / rect.height) * natH, 0, natH - 1)),
+      ]);
+      const root = getRoot();
+      const ta = root ? root.querySelector("#sam3_ms_brush_payload textarea, #sam3_ms_brush_payload input") : null;
+      if (!ta) return;
+      ta.value = JSON.stringify({
+        points: pts,
+        radius: brushState.radius,
+        erase: brushState.erase,
+        width: natW,
+        height: natH,
+        ts: Date.now(),
+      });
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
     document.addEventListener(
       "mousedown",
       function (e) {
         if (!insidePreview(e.target)) return;
         const currentImg = getPreviewImg();
         if (!currentImg) return;
+
+        if (e.shiftKey && e.button === 0 && !zoomState.spaceHeld) {
+          boxState.active = true;
+          boxState.startX = e.clientX;
+          boxState.startY = e.clientY;
+          boxState.curX = e.clientX;
+          boxState.curY = e.clientY;
+          zoomState.suppressNextClick = true;
+          updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
+          e.preventDefault();
+          return;
+        }
+
+        const brushInfo = getBrushModeInfo();
+        if (brushInfo.active && e.button === 0 && !zoomState.spaceHeld) {
+          brushState.active = true;
+          brushState.erase = brushInfo.erase;
+          brushState.radius = brushInfo.radius;
+          brushState.points = [[e.clientX, e.clientY]];
+          zoomState.suppressNextClick = true;
+          startBrushOverlay(currentImg, e.clientX, e.clientY, brushInfo.erase, brushInfo.radius);
+          e.preventDefault();
+          return;
+        }
 
         zoomState.movedDist = 0;
         if (
@@ -417,6 +655,17 @@
     window.addEventListener(
       "mousemove",
       function (e) {
+        if (boxState.active) {
+          boxState.curX = e.clientX;
+          boxState.curY = e.clientY;
+          updateBoxOverlay(boxState.startX, boxState.startY, boxState.curX, boxState.curY);
+          return;
+        }
+        if (brushState.active) {
+          brushState.points.push([e.clientX, e.clientY]);
+          extendBrushOverlay(e.clientX, e.clientY);
+          return;
+        }
         if (!zoomState.dragging) return;
         const dx = e.clientX - zoomState.startX;
         const dy = e.clientY - zoomState.startY;
@@ -436,7 +685,25 @@
 
     window.addEventListener(
       "mouseup",
-      function () {
+      function (e) {
+        if (boxState.active) {
+          boxState.active = false;
+          hideBoxOverlay();
+          submitBoxPayload(getPreviewImg(), boxState.startX, boxState.startY, e.clientX, e.clientY);
+          setTimeout(() => {
+            zoomState.suppressNextClick = false;
+          }, 250);
+          return;
+        }
+        if (brushState.active) {
+          brushState.active = false;
+          finishBrushOverlay(getPreviewImg());
+          brushState.points = [];
+          setTimeout(() => {
+            zoomState.suppressNextClick = false;
+          }, 250);
+          return;
+        }
         if (!zoomState.dragging) return;
         const wasPanning =
           zoomState.movedDist >= PAN_THRESHOLD_PX || zoomState.spaceHeld;
@@ -555,6 +822,46 @@
           e.preventDefault();
           e.stopPropagation();
           undoBtn.click();
+        }
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const key = (e.key || "").toLowerCase();
+      const root = getRoot();
+      if (!root) return;
+
+      if (key === "i") {
+        const invertBtn = root.querySelector("#sam3_ms_invert_btn");
+        if (invertBtn) {
+          e.preventDefault();
+          invertBtn.click();
+        }
+      } else if (key === "r") {
+        e.preventDefault();
+        resetZoom();
+      } else if (key === "1" || key === "2" || key === "3" || key === "4") {
+        const modeContainer = root.querySelector("#sam3_ms_click_mode");
+        const inputs = modeContainer ? modeContainer.querySelectorAll("input[type=radio]") : null;
+        const idx = Number(key) - 1;
+        if (inputs && inputs[idx]) {
+          e.preventDefault();
+          inputs[idx].click();
+        }
+      } else if (key === "v") {
+        const viewContainer = root.querySelector("#sam3_ms_preview_mode");
+        const inputs = viewContainer ? viewContainer.querySelectorAll("input[type=radio]") : null;
+        if (inputs && inputs.length > 0) {
+          e.preventDefault();
+          let activeIdx = 0;
+          for (let i = 0; i < inputs.length; i++) {
+            if (inputs[i].checked) {
+              activeIdx = i;
+              break;
+            }
+          }
+          inputs[(activeIdx + 1) % inputs.length].click();
         }
       }
     });

@@ -73,6 +73,48 @@ def ensure_binary_mask(
     return binary
 
 
+def ensure_grayscale_mask(
+    mask: np.ndarray | Image.Image | None,
+    shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Convert any 2D/3D array or PIL Image into a 2D uint8 (0..255) soft mask.
+
+    Preserves intermediate grayscale values (e.g. from feathering).
+    If `shape` is given as (H, W) and the mask size differs, resizes with LINEAR.
+    """
+    if mask is None:
+        if shape is None:
+            raise ValueError("shape must be provided when mask is None")
+        return empty_mask(shape)
+
+    if isinstance(mask, Image.Image):
+        arr = np.asarray(mask.convert("L"))
+    else:
+        arr = np.asarray(mask)
+
+    if arr.ndim == 3:
+        arr = arr[..., 0]
+    elif arr.ndim > 3:
+        arr = arr.reshape(arr.shape[-2], arr.shape[-1])
+
+    if arr.dtype == np.bool_:
+        gray = np.where(arr, 255, 0).astype(np.uint8)
+    elif np.issubdtype(arr.dtype, np.floating):
+        max_val = float(arr.max()) if arr.size else 0.0
+        scale = 255.0 if max_val <= 1.0 else 1.0
+        gray = np.clip(np.round(arr * scale), 0, 255).astype(np.uint8)
+    else:
+        gray = np.clip(arr, 0, 255).astype(np.uint8)
+
+    if shape is not None:
+        th, tw = int(shape[0]), int(shape[1])
+        if gray.shape != (th, tw):
+            gray = cv2.resize(gray, (tw, th), interpolation=cv2.INTER_LINEAR)
+            gray = np.clip(gray, 0, 255).astype(np.uint8)
+
+    return gray
+
+
 def union_masks(
     masks: Iterable[np.ndarray | Image.Image],
     shape: tuple[int, int],
@@ -120,6 +162,85 @@ def apply_grow_shrink(mask: np.ndarray, grow_px: int) -> np.ndarray:
     else:
         out = cv2.erode(bm, kernel, iterations=1)
     return np.where(out > 127, 255, 0).astype(np.uint8)
+
+
+def apply_feather(mask: np.ndarray, feather_px: int) -> np.ndarray:
+    """Apply Gaussian feathering (`feather_px > 0`) to produce a smooth 0..255 uint8 mask."""
+    gm = ensure_grayscale_mask(mask)
+    px = int(feather_px)
+    if px <= 0 or not gm.any():
+        return gm
+
+    sigma = max(0.5, float(px) * 0.5)
+    blurred = cv2.GaussianBlur(gm, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    return np.clip(blurred, 0, 255).astype(np.uint8)
+
+
+def fill_holes(
+    mask: np.ndarray | Image.Image | None,
+    shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Fill enclosed interior holes in a binary uint8 (0/255) mask using border-padded flood fill."""
+    bm = ensure_binary_mask(mask, shape=shape)
+    if not bm.any():
+        return bm
+
+    # Pad by 1px with 0 so foreground touching the image edge does not block external flood fill.
+    padded = cv2.copyMakeBorder(bm, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    flood = padded.copy()
+    cv2.floodFill(flood, None, (0, 0), 255)
+    flood_crop = flood[1:-1, 1:-1]
+    holes = cv2.bitwise_not(flood_crop)
+    return np.bitwise_or(bm, holes)
+
+
+def remove_small_islands(
+    mask: np.ndarray | Image.Image | None,
+    min_area: int = 64,
+    shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Remove disconnected foreground components smaller than `min_area` pixels."""
+    bm = ensure_binary_mask(mask, shape=shape)
+    thr = int(min_area)
+    if thr <= 0 or not bm.any():
+        return bm
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(bm, connectivity=8)
+    if num_labels <= 1:
+        return bm
+
+    keep = np.zeros(num_labels, dtype=bool)
+    for label_idx in range(1, num_labels):
+        if int(stats[label_idx, cv2.CC_STAT_AREA]) >= thr:
+            keep[label_idx] = True
+
+    out = np.where(keep[labels], 255, 0).astype(np.uint8)
+    return out
+
+
+def apply_brush_stroke(
+    mask: np.ndarray | Image.Image | None,
+    points: Sequence[tuple[int, int]],
+    radius: int = 12,
+    *,
+    erase: bool = False,
+    shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Draw a freehand brush (`erase=False`) or eraser (`erase=True`) stroke onto a binary mask."""
+    bm = ensure_binary_mask(mask, shape=shape).copy()
+    if not points:
+        return bm
+
+    r = max(1, int(radius))
+    val = 0 if erase else 255
+    pts = [(int(x), int(y)) for x, y in points]
+    if len(pts) == 1:
+        cv2.circle(bm, pts[0], r, val, thickness=-1, lineType=cv2.LINE_8)
+    else:
+        for i in range(len(pts) - 1):
+            cv2.line(bm, pts[i], pts[i + 1], val, thickness=r * 2, lineType=cv2.LINE_8)
+        cv2.circle(bm, pts[-1], r, val, thickness=-1, lineType=cv2.LINE_8)
+    return bm
 
 
 def compute_final_mask(
@@ -178,17 +299,26 @@ def render_overlay(
     click_points_pos: Sequence[tuple[int, int]] | None = None,
     click_points_neg: Sequence[tuple[int, int]] | None = None,
     alpha: float = 0.45,
+    view_mode: str = "overlay",
 ) -> Image.Image:
-    """Render semi-transparent mask overlay onto `image` (spec §4.2).
+    """Render preview image according to `view_mode` (`'overlay'`, `'mask_only'`, `'original'`).
 
-    - When `color_by_prompt` is True and `prompt_masks` is non-empty, each prompt
-      mask is tinted with a distinct palette color.
-    - Otherwise `final_mask` is tinted onto `image`.
-    - Positive click points (green circle + '+') and negative click points
-      (red circle + '-') are drawn on top if provided.
+    - `'original'`: returns the clean original RGB image for before/after comparison.
+    - `'mask_only'`: returns the grayscale mask (`0..255`) as an RGB image.
+    - `'overlay'` (default): semi-transparent mask overlay onto `image`, with optional
+      per-prompt color coding and positive/negative click markers.
     """
     base_rgb = image.convert("RGB")
     w, h = base_rgb.size
+    mode = (view_mode or "overlay").lower()
+
+    if mode == "original":
+        return base_rgb
+
+    if mode == "mask_only":
+        gm = ensure_grayscale_mask(final_mask, shape=(h, w)) if final_mask is not None else empty_mask((h, w))
+        return Image.fromarray(gm, mode="L").convert("RGB")
+
     base_arr = np.asarray(base_rgb, dtype=np.float32)
     out_arr = base_arr.copy()
     alpha_clamped = float(max(0.0, min(1.0, alpha)))
@@ -201,10 +331,11 @@ def render_overlay(
             color = np.array(PROMPT_PALETTE[idx % len(PROMPT_PALETTE)], dtype=np.float32)
             out_arr[bm] = out_arr[bm] * (1.0 - alpha_clamped) + color * alpha_clamped
     elif final_mask is not None:
-        bm = ensure_binary_mask(final_mask, shape=(h, w)) > 0
-        if bm.any():
+        gm = ensure_grayscale_mask(final_mask, shape=(h, w))
+        if gm.any():
             color = np.array(DEFAULT_FINAL_COLOR, dtype=np.float32)
-            out_arr[bm] = out_arr[bm] * (1.0 - alpha_clamped) + color * alpha_clamped
+            weight = (gm.astype(np.float32)[..., None] / 255.0) * alpha_clamped
+            out_arr = out_arr * (1.0 - weight) + color * weight
 
     result = Image.fromarray(np.clip(out_arr, 0, 255).astype(np.uint8), mode="RGB")
 

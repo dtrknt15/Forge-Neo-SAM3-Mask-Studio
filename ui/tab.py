@@ -83,39 +83,146 @@ def build_tab(
                 elem_id="sam3_ms_setup_status",
             )
 
-        # 2. Image Input & Interactive Preview + Toolbar right beneath Preview
-        with gr.Row():
+        # 2. Main 2-Column Workspace (Left: Input + Text Mask | Right: Preview + Toolbar + Output)
+        with gr.Row(equal_height=False):
             with gr.Column(scale=1):
                 input_image = gr.Image(
                     label="Input Image",
                     type="pil",
                     image_mode="RGB",
                     sources=["upload", "clipboard"],
-                    height=460,
+                    height=380,
                     elem_id="sam3_ms_input_image",
                 )
-                load_img2img_btn = gr.Button(
-                    "Load Image from img2img",
-                    size="sm",
-                    elem_id="sam3_ms_load_img2img_btn",
-                )
+                with gr.Row():
+                    load_img2img_btn = gr.Button(
+                        "Load Image from img2img",
+                        size="sm",
+                        scale=1,
+                        elem_id="sam3_ms_load_img2img_btn",
+                    )
+                    import_mask_btn = gr.UploadButton(
+                        "Import Mask PNG",
+                        file_types=["image"],
+                        size="sm",
+                        scale=1,
+                        elem_id="sam3_ms_import_mask_btn",
+                    )
+
+                # Text Mask Section (in Left Column for 1-screen workflow)
+                with gr.Accordion("Text Mask", open=True, elem_id="sam3_ms_text_accordion"):
+                    with gr.Row():
+                        pos_prompt_input = gr.Textbox(
+                            label="Positive Prompt",
+                            placeholder="e.g. person, hair, red dress",
+                            scale=3,
+                            elem_id="sam3_ms_pos_prompt",
+                        )
+                        pos_preset_dropdown = gr.Dropdown(
+                            label="Presets",
+                            choices=preset_choices,
+                            value=None,
+                            scale=2,
+                            elem_id="sam3_ms_pos_preset",
+                        )
+                        add_pos_btn = gr.Button(
+                            "Add Positive",
+                            variant="primary",
+                            scale=1,
+                            elem_id="sam3_ms_add_pos_btn",
+                        )
+                    with gr.Row():
+                        neg_prompt_input = gr.Textbox(
+                            label="Negative Prompt",
+                            placeholder="e.g. face, background",
+                            scale=3,
+                            elem_id="sam3_ms_neg_prompt",
+                        )
+                        neg_preset_dropdown = gr.Dropdown(
+                            label="Negative Presets",
+                            choices=preset_choices,
+                            value=None,
+                            scale=2,
+                            elem_id="sam3_ms_neg_preset",
+                        )
+                        add_neg_btn = gr.Button(
+                            "Add Negative",
+                            scale=1,
+                            elem_id="sam3_ms_add_neg_btn",
+                        )
+                    active_prompts_group = gr.CheckboxGroup(
+                        label="Applied Prompts (uncheck to remove)",
+                        choices=[],
+                        value=[],
+                        elem_id="sam3_ms_active_prompts",
+                    )
+                    with gr.Accordion("Manage Custom Presets", open=False, elem_id="sam3_ms_custom_preset_acc"):
+                        with gr.Row():
+                            custom_preset_name = gr.Textbox(
+                                label="Preset ID / Name",
+                                placeholder="e.g. bangs_only",
+                                scale=2,
+                                elem_id="sam3_ms_custom_preset_name",
+                            )
+                            save_preset_btn = gr.Button(
+                                "Save Current Inputs as Preset",
+                                scale=1,
+                                elem_id="sam3_ms_save_preset_btn",
+                            )
+                            delete_preset_btn = gr.Button(
+                                "Delete Selected Preset",
+                                scale=1,
+                                elem_id="sam3_ms_delete_preset_btn",
+                            )
+
             with gr.Column(scale=1):
                 preview_image = gr.Image(
-                    label="Mask Preview (Left-Click: Add/Mode | Right-Click: Exclude | Wheel: Zoom)",
+                    label="Mask Preview",
                     type="pil",
                     image_mode="RGB",
                     interactive=False,
-                    height=460,
+                    height=440,
                     elem_id="sam3_ms_preview_image",
+                )
+                gr.Markdown(
+                    "<sub>Left-Click: Add/Mode | Right-Click: Exclude | Shift+Drag: Box | Wheel: Zoom | Space+Drag: Pan</sub>",
+                    elem_id="sam3_ms_preview_hint",
                 )
                 # Compact interactive controls directly under the preview image
                 with gr.Row(elem_id="sam3_ms_preview_mode_row"):
                     click_mode_radio = gr.Radio(
-                        choices=["Click Mode: Add", "Click Mode: Exclude"],
+                        choices=["Click Mode: Add", "Click Mode: Exclude", "Brush: Add", "Brush: Erase"],
                         value="Click Mode: Add",
                         label="Click Mode",
-                        scale=2,
+                        scale=3,
                         elem_id="sam3_ms_click_mode",
+                    )
+                    brush_size_slider = gr.Slider(
+                        label="Brush Size (px)",
+                        minimum=2,
+                        maximum=120,
+                        step=2,
+                        value=20,
+                        scale=1,
+                        visible=False,
+                        elem_id="sam3_ms_brush_size",
+                    )
+                with gr.Row(elem_id="sam3_ms_preview_view_row"):
+                    preview_mode_radio = gr.Radio(
+                        choices=["Overlay", "Mask Only", "Original"],
+                        value="Overlay",
+                        label="Preview View",
+                        scale=2,
+                        elem_id="sam3_ms_preview_mode",
+                    )
+                    overlay_opacity_slider = gr.Slider(
+                        label="Overlay Opacity",
+                        minimum=0.10,
+                        maximum=0.90,
+                        step=0.05,
+                        value=0.45,
+                        scale=1,
+                        elem_id="sam3_ms_overlay_opacity",
                     )
                     color_by_prompt_chk = gr.Checkbox(
                         label="Color-code by text prompt",
@@ -149,81 +256,41 @@ def build_tab(
                         elem_id="sam3_ms_reset_zoom_btn",
                     )
 
+                # Output Section (in Right Column for immediate access without scrolling)
+                with gr.Accordion("Output", open=True, elem_id="sam3_ms_output_accordion"):
+                    with gr.Row():
+                        send_inpaint_btn = gr.Button(
+                            "Send to Inpaint upload",
+                            variant="primary",
+                            elem_id="sam3_ms_send_inpaint_btn",
+                        )
+                        download_png_btn = gr.Button(
+                            "Download Masked PNG",
+                            elem_id="sam3_ms_download_png_btn",
+                        )
+                    with gr.Row():
+                        crop_mode_radio = gr.Radio(
+                            choices=["Full Image", "Crop to Mask"],
+                            value="Full Image",
+                            label="Region Option",
+                            elem_id="sam3_ms_crop_mode",
+                        )
+                        bg_mode_radio = gr.Radio(
+                            choices=["Transparent", "White Background", "Mask Only (B&W)"],
+                            value="Transparent",
+                            label="Background Option",
+                            elem_id="sam3_ms_bg_mode",
+                        )
+
         status_bar = gr.Textbox(
             label="Status",
             value="Ready. Upload an image to start.",
             interactive=False,
-            max_lines=2,
+            max_lines=1,
             elem_id="sam3_ms_status_bar",
         )
 
-        # 3. Text Mask Section
-        with gr.Accordion("Text Mask", open=True, elem_id="sam3_ms_text_accordion"):
-            with gr.Row():
-                pos_prompt_input = gr.Textbox(
-                    label="Positive Prompt",
-                    placeholder="e.g. person, hair, red dress",
-                    scale=3,
-                    elem_id="sam3_ms_pos_prompt",
-                )
-                pos_preset_dropdown = gr.Dropdown(
-                    label="Presets",
-                    choices=preset_choices,
-                    value=None,
-                    scale=2,
-                    elem_id="sam3_ms_pos_preset",
-                )
-                add_pos_btn = gr.Button(
-                    "Add Positive",
-                    variant="primary",
-                    scale=1,
-                    elem_id="sam3_ms_add_pos_btn",
-                )
-            with gr.Row():
-                neg_prompt_input = gr.Textbox(
-                    label="Negative Prompt",
-                    placeholder="e.g. face, background",
-                    scale=3,
-                    elem_id="sam3_ms_neg_prompt",
-                )
-                neg_preset_dropdown = gr.Dropdown(
-                    label="Negative Presets",
-                    choices=preset_choices,
-                    value=None,
-                    scale=2,
-                    elem_id="sam3_ms_neg_preset",
-                )
-                add_neg_btn = gr.Button(
-                    "Add Negative",
-                    scale=1,
-                    elem_id="sam3_ms_add_neg_btn",
-                )
-            active_prompts_group = gr.CheckboxGroup(
-                label="Applied Prompts (uncheck to remove)",
-                choices=[],
-                value=[],
-                elem_id="sam3_ms_active_prompts",
-            )
-            with gr.Accordion("Manage Custom Presets", open=False, elem_id="sam3_ms_custom_preset_acc"):
-                with gr.Row():
-                    custom_preset_name = gr.Textbox(
-                        label="Preset ID / Name",
-                        placeholder="e.g. bangs_only",
-                        scale=2,
-                        elem_id="sam3_ms_custom_preset_name",
-                    )
-                    save_preset_btn = gr.Button(
-                        "Save Current Inputs as Preset",
-                        scale=1,
-                        elem_id="sam3_ms_save_preset_btn",
-                    )
-                    delete_preset_btn = gr.Button(
-                        "Delete Selected Preset",
-                        scale=1,
-                        elem_id="sam3_ms_delete_preset_btn",
-                    )
-
-        # 4. Mask Adjustment Section
+        # 3. Mask Adjustment Section
         with gr.Accordion("Mask Adjustment", open=True, elem_id="sam3_ms_adjust_accordion"):
             with gr.Row():
                 grow_slider = gr.Slider(
@@ -232,13 +299,17 @@ def build_tab(
                     maximum=64,
                     step=1,
                     value=0,
-                    scale=3,
+                    scale=1,
                     elem_id="sam3_ms_grow_slider",
                 )
-                apply_grow_btn = gr.Button(
-                    "Apply",
+                feather_slider = gr.Slider(
+                    label="Feather / Blur (px)",
+                    minimum=0,
+                    maximum=64,
+                    step=1,
+                    value=0,
                     scale=1,
-                    elem_id="sam3_ms_apply_grow_btn",
+                    elem_id="sam3_ms_feather_slider",
                 )
                 score_thr_slider = gr.Slider(
                     label="Detection Score Threshold",
@@ -246,37 +317,78 @@ def build_tab(
                     maximum=0.95,
                     step=0.05,
                     value=callbacks.DEFAULT_SCORE_THRESHOLD,
-                    scale=3,
+                    scale=1,
                     elem_id="sam3_ms_score_thr_slider",
                 )
+            with gr.Row():
+                fill_holes_btn = gr.Button(
+                    "Fill Holes",
+                    size="sm",
+                    scale=1,
+                    elem_id="sam3_ms_fill_holes_btn",
+                )
+                min_island_area = gr.Number(
+                    label="Min Island Area (px)",
+                    value=64,
+                    minimum=1,
+                    maximum=100000,
+                    precision=0,
+                    scale=1,
+                    elem_id="sam3_ms_min_island_area",
+                )
+                remove_islands_btn = gr.Button(
+                    "Remove Small Islands",
+                    size="sm",
+                    scale=1,
+                    elem_id="sam3_ms_remove_islands_btn",
+                )
 
-        # 5. Output Section
-        with gr.Accordion("Output", open=True, elem_id="sam3_ms_output_accordion"):
+        inpaint_payload_box = gr.Textbox(visible=False, elem_id="sam3_ms_inpaint_payload")
+        download_payload_box = gr.Textbox(visible=False, elem_id="sam3_ms_download_payload")
+        box_payload_box = gr.Textbox(value="", visible=False, elem_id="sam3_ms_box_payload")
+        brush_payload_box = gr.Textbox(value="", visible=False, elem_id="sam3_ms_brush_payload")
+
+        # 6. Batch Processing Section
+        with gr.Accordion("Batch Processing", open=False, elem_id="sam3_ms_batch_accordion"):
             with gr.Row():
-                send_inpaint_btn = gr.Button(
-                    "Send to Inpaint upload",
+                batch_input_dir = gr.Textbox(
+                    label="Input Directory",
+                    placeholder="C:\\path\\to\\images",
+                    scale=2,
+                    elem_id="sam3_ms_batch_in_dir",
+                )
+                batch_output_dir = gr.Textbox(
+                    label="Output Directory (optional)",
+                    placeholder="Default: <Input>/sam3_masks",
+                    scale=2,
+                    elem_id="sam3_ms_batch_out_dir",
+                )
+            with gr.Row():
+                batch_preset_dropdown = gr.Dropdown(
+                    label="Batch Preset",
+                    choices=preset_choices,
+                    value=None,
+                    scale=1,
+                    elem_id="sam3_ms_batch_preset",
+                )
+                batch_pos_prompt = gr.Textbox(
+                    label="Batch Positive Prompt",
+                    placeholder="e.g. person, hair",
+                    scale=2,
+                    elem_id="sam3_ms_batch_pos",
+                )
+                batch_neg_prompt = gr.Textbox(
+                    label="Batch Negative Prompt",
+                    placeholder="e.g. background",
+                    scale=2,
+                    elem_id="sam3_ms_batch_neg",
+                )
+                batch_run_btn = gr.Button(
+                    "Run Batch Masking",
                     variant="primary",
-                    elem_id="sam3_ms_send_inpaint_btn",
+                    scale=1,
+                    elem_id="sam3_ms_batch_run_btn",
                 )
-                download_png_btn = gr.Button(
-                    "Download Masked PNG",
-                    elem_id="sam3_ms_download_png_btn",
-                )
-            with gr.Row():
-                crop_mode_radio = gr.Radio(
-                    choices=["Full Image", "Crop to Mask"],
-                    value="Full Image",
-                    label="Region Option",
-                    elem_id="sam3_ms_crop_mode",
-                )
-                bg_mode_radio = gr.Radio(
-                    choices=["Transparent", "White Background"],
-                    value="Transparent",
-                    label="Background Option",
-                    elem_id="sam3_ms_bg_mode",
-                )
-            inpaint_payload_box = gr.Textbox(visible=False, elem_id="sam3_ms_inpaint_payload")
-            download_payload_box = gr.Textbox(visible=False, elem_id="sam3_ms_download_payload")
 
         # ===================================================================
         # Event Bindings (M1 - M6)
@@ -312,10 +424,25 @@ def build_tab(
             inputs=[img2img_canvas_b64, state],
             outputs=[input_image, preview_image, state, active_prompts_group, status_bar],
         )
+        import_mask_btn.upload(
+            fn=callbacks.on_import_base_mask,
+            inputs=[import_mask_btn, state],
+            outputs=[preview_image, state, status_bar],
+        )
 
         color_by_prompt_chk.change(
             fn=callbacks.on_color_mode_change,
             inputs=[color_by_prompt_chk, state],
+            outputs=[preview_image, state],
+        )
+        preview_mode_radio.change(
+            fn=callbacks.on_preview_mode_change,
+            inputs=[preview_mode_radio, state],
+            outputs=[preview_image, state],
+        )
+        overlay_opacity_slider.release(
+            fn=callbacks.on_overlay_opacity_change,
+            inputs=[overlay_opacity_slider, state],
             outputs=[preview_image, state],
         )
 
@@ -370,17 +497,47 @@ def build_tab(
             inputs=[click_mode_radio, state, ckpt_dropdown],
             outputs=[preview_image, state, status_bar],
         )
-
-        # M4: Mask Adjustment (Grow / Shrink, Score Threshold, Invert, Clear, Undo, Reset Zoom)
-        apply_grow_btn.click(
-            fn=callbacks.on_grow_change,
-            inputs=[grow_slider, state],
+        box_payload_box.change(
+            fn=callbacks.on_box_select,
+            inputs=[box_payload_box, click_mode_radio, state, ckpt_dropdown],
             outputs=[preview_image, state, status_bar],
         )
+        brush_payload_box.change(
+            fn=callbacks.on_brush_stroke,
+            inputs=[brush_payload_box, click_mode_radio, brush_size_slider, state],
+            outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
+        )
+
+        def _toggle_brush_slider(mode: str):
+            is_brush = "Brush" in (mode or "") or "ブラシ" in (mode or "") or "消しゴム" in (mode or "")
+            return gr.update(visible=is_brush)
+
+        click_mode_radio.change(
+            fn=_toggle_brush_slider,
+            inputs=[click_mode_radio],
+            outputs=[brush_size_slider],
+        )
+
+        # M4: Mask Adjustment (Grow / Shrink, Score Threshold, Invert, Clear, Undo, Reset Zoom)
         grow_slider.release(
             fn=callbacks.on_grow_change,
             inputs=[grow_slider, state],
             outputs=[preview_image, state, status_bar],
+        )
+        feather_slider.release(
+            fn=callbacks.on_feather_change,
+            inputs=[feather_slider, state],
+            outputs=[preview_image, state, status_bar],
+        )
+        fill_holes_btn.click(
+            fn=callbacks.on_fill_holes,
+            inputs=[state],
+            outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
+        )
+        remove_islands_btn.click(
+            fn=callbacks.on_remove_small_islands,
+            inputs=[min_island_area, state],
+            outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
         )
         score_thr_slider.release(
             fn=callbacks.on_score_threshold_change,
@@ -392,15 +549,33 @@ def build_tab(
             inputs=[state],
             outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
         )
+
+        def _clear_ui_wrapper(st: callbacks.MaskStudioState):
+            prev, new_st, chips, grow_val, msg = callbacks.on_clear_mask(st)
+            return prev, new_st, chips, grow_val, new_st.feather_px, msg
+
         clear_mask_btn.click(
-            fn=callbacks.on_clear_mask,
+            fn=_clear_ui_wrapper,
             inputs=[state],
-            outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
+            outputs=[preview_image, state, active_prompts_group, grow_slider, feather_slider, status_bar],
         )
+
+        def _undo_ui_wrapper(st: callbacks.MaskStudioState):
+            prev, new_st, chips, grow_val, thr_val, msg = callbacks.on_undo_with_ui(st)
+            return prev, new_st, chips, grow_val, new_st.feather_px, thr_val, msg
+
         undo_btn.click(
-            fn=callbacks.on_undo_with_ui,
+            fn=_undo_ui_wrapper,
             inputs=[state],
-            outputs=[preview_image, state, active_prompts_group, grow_slider, score_thr_slider, status_bar],
+            outputs=[
+                preview_image,
+                state,
+                active_prompts_group,
+                grow_slider,
+                feather_slider,
+                score_thr_slider,
+                status_bar,
+            ],
         )
         reset_zoom_btn.click(
             fn=None,
@@ -494,6 +669,23 @@ def build_tab(
         load_model_btn.click(
             fn=callbacks.on_load_model,
             inputs=[ckpt_dropdown],
+            outputs=[status_bar],
+        )
+        batch_run_btn.click(
+            fn=callbacks.on_batch_process,
+            inputs=[
+                batch_input_dir,
+                batch_output_dir,
+                batch_pos_prompt,
+                batch_neg_prompt,
+                batch_preset_dropdown,
+                grow_slider,
+                feather_slider,
+                score_thr_slider,
+                crop_mode_radio,
+                bg_mode_radio,
+                ckpt_dropdown,
+            ],
             outputs=[status_bar],
         )
         unload_model_btn.click(

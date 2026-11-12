@@ -17,22 +17,29 @@ Standalone **SAM3 (Segment Anything Model 3)** mask creation, interactive refine
   - Segment objects with natural language positive/negative prompts (`person`, `hair`, `face`, or descriptive phrases).
   - Built-in presets (`full_body`, `face`, `hair`, `background`) and custom preset management saved to `user_presets.json` (so `git pull` updates never conflict with your custom presets).
   - Remove individual applied prompts at any time by unchecking their prompt chips.
-- **Interactive Click Add / Exclude + Zoom & Pan**:
-  - **Left-Click** on the preview image: Add region (or follow selected Click Mode).
-  - **Right-Click** on the preview image: Immediately **Exclude (subtract)** region without leaving your cursor position.
-  - **Mouse Wheel**: Zoom in/out (`100%` – `800%`) centered at the cursor; zoom & pan position persist across clicks so you can refine tiny details effortlessly.
-  - **Drag / Space + Drag**: Pan the zoomed preview image (`Space + Drag` or `Middle-Drag` pans safely without ever triggering a click); **Double-Click** or click **Reset Zoom** to return to `100%`.
+- **Interactive Click, Box, Brush & Zoom/Pan**:
+  - **Left-Click**: Add or exclude region according to the selected mode.
+  - **Right-Click**: Immediately **Exclude (subtract)** region without switching modes.
+  - **Shift + Drag**: Draw a **bounding box** to segment or exclude an object in one drag.
+  - **Brush: Add / Erase**: Freehand brush & eraser with adjustable **Brush Size (px)** (`2` – `120` px) for fine edge touch-ups.
+  - **Mouse Wheel**: Zoom in/out (`100%` – `800%`) centered at the cursor; zoom & pan position persist across edits.
+  - **Drag / Space + Drag**: Pan the zoomed preview (`Space + Drag` or `Middle-Drag`); **Double-Click** or press `R` / **Reset Zoom** to return to `100%`.
+  - **Preview View & Opacity**: Switch between `Overlay`, `Mask Only`, and `Original`, and adjust **Overlay Opacity** (`0.10` – `0.90`).
+  - **Keyboard Shortcuts**: `Ctrl+Z` (Undo), `I` (Invert Mask), `R` (Reset Zoom), `V` (Cycle Preview View), `1`–`4` (Switch Click/Brush Mode).
 - **Unified Set-Operation Engine**:
   - `final_mask = (base_mask ∪ positive_prompts ∪ positive_clicks) \ (negative_prompts ∪ negative_clicks)`
 - **Mask Refinement**:
   - **Invert Mask**: One-click full mask inversion (`0 <-> 255`); subsequent clicks/prompts naturally add to or subtract from the inverted mask.
   - **Grow / Shrink (px)**: Elliptical morphological dilation/erosion (`-64` to `+64` px).
+  - **Feather / Blur (px)**: Gaussian edge feathering (`0` – `64` px) reflected in preview, `Inpaint upload`, and PNG export.
+  - **Fill Holes & Remove Small Islands**: One-click interior hole filling and connected-component noise removal (`Min Island Area`).
   - **Detection Score Threshold**: Fine-tune SAM3 text detection sensitivity (`0.05` – `0.95`).
-  - **Multi-Step Undo (`Ctrl + Z`)**: Full state snapshot history across prompts, clicks, inversion, and clear.
-- **One-Click Import & Output**:
-  - **Load Image from img2img**: Pull the current image from `img2img` directly into SAM3 Mask Studio.
-  - **Send to Inpaint upload**: Transfers both the original image and the generated mask into `img2img -> Inpaint upload` and switches directly to the `Inpaint upload` sub-tab.
-  - **Download Masked PNG**: Exports an RGBA PNG (`Full Image` or `Crop to Mask`, with `Transparent` or `White Background`).
+  - **Multi-Step Undo (`Ctrl + Z`)**: Full state snapshot history across prompts, clicks, boxes, brush strokes, adjustments, inversion, and clear.
+- **Import, Export & Batch Processing**:
+  - **Load Image from img2img** & **Import Mask PNG**: Pull the active `img2img` image or load an existing mask PNG as a base mask for further SAM3 refinement.
+  - **Send to Inpaint upload**: Transfers both the original image and the generated mask (including feathering) into `img2img -> Inpaint upload` and switches directly to the `Inpaint upload` sub-tab.
+  - **Download Masked PNG**: Exports `Full Image` or `Crop to Mask` PNGs with `Transparent`, `White Background`, or `Mask Only (B&W)` output.
+  - **Batch Processing**: Apply text prompts or presets across an entire folder of images with your Grow/Feather/Threshold and export settings.
 - **BYOT (Bring Your Own Token) Setup**:
   - Safe Hugging Face access check and user-triggered download for gated `facebook/sam3` weights, plus manual placement support in `<Forge-Neo>/models/sam3/`.
 
@@ -69,20 +76,25 @@ This extension uses WebUI's standard `localizations/*.json` mechanism:
   - ポジティブ／ネガティブプロンプトによる領域抽出と集合演算合成（`positive_set - negative_set`）。
   - デフォルトプリセット（人物全体・顔・髪・背景）に加え、UI からカスタムプリセットを保存可能（Git 管理外の `user_presets.json` に保存されるため、`git pull` による拡張アップデート時に競合しません）。
   - 適用中プロンプトはチップ一覧のチェック解除でいつでも個別に削除・再計算できます。
-- **直感的なプレビュー操作（右クリック除外・ホイール拡大・ドラッグ移動）**:
-  - **左クリック**: クリックした領域をマスクに追加（または選択中のクリックモードに従う）
-  - **右クリック**: モードを切り替えずに、その場の対象を即座に **除外（くり抜き）**
-  - **マウスホイール**: カーソル位置を中心に **100%〜800% 拡大・縮小**（拡大したまま連続クリックしてもズーム位置が維持されます）
-  - **ドラッグ移動（`Space + ドラッグ` / 中ボタンドラッグ対応）**: 拡大中のドラッグ（または `Space` キーを押しながらドラッグ／中ボタンドラッグ）でクリック誤爆なしに画面移動。**ダブルクリック** または **「拡大リセット」** で 100% 表示に復帰します。
+- **直感的なプレビュー操作（クリック・矩形選択・ブラシ・拡大移動）**:
+  - **左クリック / 右クリック**: 選択中モードで領域追加／除外（右クリックはモード切替なしで即 **除外**）
+  - **矩形選択（`Shift + ドラッグ`）**: ドラッグした矩形範囲を SAM3 で一括追加／除外
+  - **ブラシ / 消しゴム**: `Brush Size (px)`（`2〜120 px`）調整対応のフリーハンド微調整
+  - **マウスホイール / ドラッグ移動**: カーソル中心 **100%〜800% 拡大・縮小**、拡大中ドラッグ・`Space + ドラッグ`・中ボタンドラッグで移動、**ダブルクリック** または `R` / **拡大リセット** で 100% 復帰
+  - **プレビュー表示切替 ＆ 不透明度**: `オーバーレイ / マスク単体 / 元画像` の比較切替と不透明度調整（`0.10〜0.90`）
+  - **ショートカット**: `Ctrl+Z`（元に戻す）、`I`（反転）、`R`（ズームリセット）、`V`（表示モード切替）、`1`〜`4`（クリック/ブラシモード切替）
 - **マスク調整・反転・アンドゥ**:
-  - **マスクを反転**: 現在のマスク範囲をワンクリックで反転（反転した状態に対して、さらにクリック追加／除外を重ねられます）。
-  - **拡張 / 縮小 (px)**: `-64px 〜 +64px` の楕円カーネルによる境界の拡張・収縮。
-  - **検出スコア閾値**: テキストプロンプトの検出感度を `0.05 〜 0.95` で調整可能。
-  - **元に戻す (`Ctrl + Z`)**: プロンプト・クリック・反転・クリアを含む操作履歴（直近10件）をスナップショット復元。
-- **ワンクリック入出力**:
-  - **img2img から画像を取得**: `img2img` 上の画像をワンクリックで読み込み。
-  - **Inpaint upload へ転送**: 元画像とマスクを `img2img` の `Inpaint upload` へ同時セットし、直接 `Inpaint upload` タブへジャンプします。
-  - **マスク適用PNGをDL**: 全体またはマスク領域でクロップした透過 PNG（または白背景 PNG）を書き出し・ダウンロード。
+  - **マスクを反転**: 現在のマスク範囲をワンクリックで反転（反転後さらにクリック・ブラシ重ね掛け可能）
+  - **拡張 / 縮小 (px)**: `-64px 〜 +64px` の楕円カーネルによる境界の拡張・収縮
+  - **ぼかし / フェザー (px)**: `0px 〜 64px` のガウシアンフェザリング（プレビュー・`Inpaint upload` 転送・PNG出力に反映）
+  - **穴埋め ＆ 小ノイズ除去**: マスク内の穴埋めと指定面積未満の孤立ノイズ一括除去
+  - **検出スコア閾値**: テキストプロンプトの検出感度を `0.05 〜 0.95` で調整可能
+  - **元に戻す (`Ctrl + Z`)**: プロンプト・クリック・矩形・ブラシ・調整・反転・クリアを含む操作履歴（直近10件）をスナップショット復元
+- **入出力 ＆ バッチ処理**:
+  - **img2img から画像を取得** ＆ **既存マスクPNG読込**: `img2img` からの画像取得や既存マスクの読み込み・再編集に対応
+  - **Inpaint upload へ転送**: 元画像とマスク（フェザー反映済み）を `img2img` の `Inpaint upload` へ同時セットし、直接タブへジャンプ
+  - **マスク適用PNGをDL**: 全体／マスク領域クロップで `透過`・`白背景`・`マスクのみ (白黒)` PNG を書き出し
+  - **バッチ処理（フォルダ一括）**: 指定フォルダ内の全画像に対し、プロンプト／プリセット＋現在の調整・出力設定で一括マスキング＆PNG保存
 
 ### 導入方法
 1. Forge Neo の **Extensions** -> **Install from URL** を開きます。

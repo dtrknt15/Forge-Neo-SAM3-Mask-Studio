@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ class HistorySnapshot:
     neg_click_masks: list[np.ndarray]
     grow_px: int
     score_threshold: float = DEFAULT_SCORE_THRESHOLD
+    feather_px: int = 0
 
 
 @dataclass
@@ -51,6 +53,7 @@ class MaskStudioState:
     click_points_pos: list[tuple[int, int]] = field(default_factory=list)
     click_points_neg: list[tuple[int, int]] = field(default_factory=list)
     grow_px: int = 0
+    feather_px: int = 0
     score_threshold: float = DEFAULT_SCORE_THRESHOLD
     final_mask: np.ndarray | None = None
     base_mask: np.ndarray | None = None
@@ -61,6 +64,8 @@ class MaskStudioState:
     pos_click_masks: list[np.ndarray] = field(default_factory=list)
     neg_click_masks: list[np.ndarray] = field(default_factory=list)
     color_by_prompt: bool = False
+    preview_mode: str = "Overlay"
+    overlay_opacity: float = 0.45
 
     def push_history(self) -> None:
         """Save current editing snapshot onto undo history."""
@@ -78,6 +83,7 @@ class MaskStudioState:
                 neg_click_masks=[m.copy() for m in self.neg_click_masks],
                 grow_px=int(self.grow_px),
                 score_threshold=float(self.score_threshold),
+                feather_px=int(self.feather_px),
             )
             self.history.append(snap)
             if len(self.history) > MAX_HISTORY_SIZE:
@@ -98,6 +104,7 @@ class MaskStudioState:
             self.neg_click_masks = [m.copy() for m in snap.neg_click_masks]
             self.grow_px = int(snap.grow_px)
             self.score_threshold = float(snap.score_threshold)
+            self.feather_px = int(getattr(snap, "feather_px", 0))
         else:
             self.final_mask = snap.copy()
 
@@ -114,6 +121,7 @@ class MaskStudioState:
         self.neg_click_masks.clear()
         self.base_mask = None
         self.grow_px = 0
+        self.feather_px = 0
         self.history.clear()
         if self.original_image is not None:
             w, h = self.original_image.size
@@ -194,6 +202,41 @@ def _value_to_pil(value: Any) -> Image.Image | None:
     return None
 
 
+def get_output_mask(state: MaskStudioState) -> np.ndarray | None:
+    """Return `final_mask` with `feather_px` applied (or raw binary mask when `feather_px <= 0`)."""
+    if state.final_mask is None:
+        return None
+    return mask_ops.apply_feather(state.final_mask, state.feather_px)
+
+
+def _normalize_preview_mode(mode_label: str | None) -> str:
+    txt = (mode_label or "").strip().lower()
+    if "mask" in txt or "マスク" in txt:
+        return "mask_only"
+    if "original" in txt or "元画像" in txt:
+        return "original"
+    return "overlay"
+
+
+def _render_state_preview(state: MaskStudioState) -> Image.Image | None:
+    if state.original_image is None:
+        return None
+    active_pos_masks = {
+        p: state.pos_prompt_masks[p] for p in state.positive_prompts if p in state.pos_prompt_masks
+    }
+    display_mask = get_output_mask(state)
+    return mask_ops.render_overlay(
+        state.original_image,
+        display_mask,
+        prompt_masks=active_pos_masks,
+        color_by_prompt=state.color_by_prompt,
+        click_points_pos=state.click_points_pos,
+        click_points_neg=state.click_points_neg,
+        alpha=float(state.overlay_opacity),
+        view_mode=_normalize_preview_mode(state.preview_mode),
+    )
+
+
 def recompute_and_render(
     state: MaskStudioState,
     *,
@@ -228,17 +271,7 @@ def recompute_and_render(
         grow_px=state.grow_px,
     )
 
-    active_pos_masks = {
-        p: state.pos_prompt_masks[p] for p in state.positive_prompts if p in state.pos_prompt_masks
-    }
-    return mask_ops.render_overlay(
-        state.original_image,
-        state.final_mask,
-        prompt_masks=active_pos_masks,
-        color_by_prompt=state.color_by_prompt,
-        click_points_pos=state.click_points_pos,
-        click_points_neg=state.click_points_neg,
-    )
+    return _render_state_preview(state)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +324,26 @@ def on_load_from_img2img(
     )
 
 
+def on_import_base_mask(
+    mask_file: Any,
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState, str]:
+    """Import an existing mask image as `base_mask` (resized to original image dimensions)."""
+    st = ensure_state(state)
+    if st.original_image is None:
+        return None, st, t("status.no_image")
+
+    mask_img = _value_to_pil(mask_file)
+    if mask_img is None:
+        return _render_state_preview(st), st, t("status.no_mask")
+
+    w, h = st.original_image.size
+    st.push_history()
+    st.base_mask = mask_ops.ensure_binary_mask(mask_img, shape=(h, w))
+    preview = recompute_and_render(st, record_history=False)
+    return preview, st, t("status.mask_imported", width=w, height=h)
+
+
 def on_color_mode_change(
     color_by_prompt: bool,
     state: MaskStudioState | None,
@@ -298,20 +351,27 @@ def on_color_mode_change(
     """Toggle per-prompt color-coded overlay vs unified final mask overlay."""
     st = ensure_state(state)
     st.color_by_prompt = bool(color_by_prompt)
-    if st.original_image is None:
-        return None, st
-    active_pos_masks = {
-        p: st.pos_prompt_masks[p] for p in st.positive_prompts if p in st.pos_prompt_masks
-    }
-    preview = mask_ops.render_overlay(
-        st.original_image,
-        st.final_mask,
-        prompt_masks=active_pos_masks,
-        color_by_prompt=st.color_by_prompt,
-        click_points_pos=st.click_points_pos,
-        click_points_neg=st.click_points_neg,
-    )
-    return preview, st
+    return _render_state_preview(st), st
+
+
+def on_preview_mode_change(
+    preview_mode: str,
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState]:
+    """Switch preview display between Overlay, Mask Only, and Original image."""
+    st = ensure_state(state)
+    st.preview_mode = preview_mode or "Overlay"
+    return _render_state_preview(st), st
+
+
+def on_overlay_opacity_change(
+    opacity: float,
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState]:
+    """Adjust mask overlay transparency (`0.10` - `0.90`)."""
+    st = ensure_state(state)
+    st.overlay_opacity = max(0.0, min(1.0, float(opacity)))
+    return _render_state_preview(st), st
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +662,132 @@ def on_preview_click(
     return preview, st, t("status.click_applied", mode=mode_str, x=x, y=y)
 
 
+def on_box_select(
+    box_payload_json: str,
+    click_mode: str,
+    state: MaskStudioState | None,
+    ckpt_name: str | None = None,
+) -> tuple[Image.Image | None, MaskStudioState, str]:
+    """Handle Shift+Drag bounding-box segmentation on the preview image."""
+    st = ensure_state(state)
+    if st.original_image is None:
+        return None, st, t("status.no_image")
+
+    raw = (box_payload_json or "").strip()
+    if not raw:
+        return _render_state_preview(st), st, t("status.box_ignored")
+
+    try:
+        data = json.loads(raw)
+        x0 = float(data["x0"])
+        y0 = float(data["y0"])
+        x1 = float(data["x1"])
+        y1 = float(data["y1"])
+        disp_w = float(data.get("width") or 0)
+        disp_h = float(data.get("height") or 0)
+    except Exception:
+        return _render_state_preview(st), st, t("status.box_ignored")
+
+    orig_w, orig_h = st.original_image.size
+    display_size = (int(round(disp_w)), int(round(disp_h))) if disp_w > 0 and disp_h > 0 else None
+    sx0, sy0 = mask_ops.scale_click_coords(x0, y0, display_size=display_size, orig_size=(orig_w, orig_h))
+    sx1, sy1 = mask_ops.scale_click_coords(x1, y1, display_size=display_size, orig_size=(orig_w, orig_h))
+    if abs(sx1 - sx0) < 2 or abs(sy1 - sy0) < 2:
+        return _render_state_preview(st), st, t("status.box_ignored")
+
+    is_exclude = "Exclude" in (click_mode or "") or "除外" in (click_mode or "")
+
+    st.push_history()
+    try:
+        box_mask = sam3_backend.predict_box_mask(
+            st.original_image,
+            (min(sx0, sx1), min(sy0, sy1), max(sx0, sx1), max(sy0, sy1)),
+            ckpt_name=ckpt_name,
+        )
+    except Exception as exc:
+        if st.history:
+            st.restore_snapshot(st.history.pop())
+        return _render_state_preview(st), st, t("status.inference_error", error=str(exc))
+
+    if is_exclude:
+        st.neg_click_masks.append(box_mask)
+        mode_str = t("Click Mode: Exclude")
+    else:
+        st.pos_click_masks.append(box_mask)
+        mode_str = t("Click Mode: Add")
+
+    preview = recompute_and_render(st, record_history=False)
+    return preview, st, t(
+        "status.box_applied",
+        mode=mode_str,
+        x0=min(sx0, sx1),
+        y0=min(sy0, sy1),
+        x1=max(sx0, sx1),
+        y1=max(sy0, sy1),
+    )
+
+
+def on_brush_stroke(
+    brush_payload_json: str,
+    click_mode: str,
+    brush_radius: int,
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState, Any, int, str]:
+    """Apply a freehand brush/eraser stroke onto `final_mask` and commit as `base_mask`."""
+    st = ensure_state(state)
+    if st.original_image is None:
+        return None, st, gr.update(), 0, t("status.no_image")
+
+    raw = (brush_payload_json or "").strip()
+    if not raw:
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.brush_ignored")
+
+    try:
+        data = json.loads(raw)
+        raw_pts = data.get("points") or []
+        disp_w = float(data.get("width") or 0)
+        disp_h = float(data.get("height") or 0)
+        r_in = int(round(float(data.get("radius") or brush_radius or 16)))
+    except Exception:
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.brush_ignored")
+
+    if not raw_pts:
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.brush_ignored")
+
+    orig_w, orig_h = st.original_image.size
+    display_size = (int(round(disp_w)), int(round(disp_h))) if disp_w > 0 and disp_h > 0 else None
+    scaled_pts = [
+        mask_ops.scale_click_coords(float(p[0]), float(p[1]), display_size=display_size, orig_size=(orig_w, orig_h))
+        for p in raw_pts
+        if isinstance(p, (list, tuple)) and len(p) >= 2
+    ]
+    if not scaled_pts:
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.brush_ignored")
+
+    scale_factor = (orig_w / disp_w) if disp_w > 0 else 1.0
+    scaled_radius = max(1, int(round(r_in * scale_factor)))
+    is_erase = (
+        bool(data.get("erase"))
+        or "Erase" in (click_mode or "")
+        or "Exclude" in (click_mode or "")
+        or "消しゴム" in (click_mode or "")
+        or "除外" in (click_mode or "")
+    )
+
+    st.push_history()
+    base = st.final_mask if st.final_mask is not None else mask_ops.empty_mask((orig_h, orig_w))
+    updated = mask_ops.apply_brush_stroke(
+        base,
+        scaled_pts,
+        radius=scaled_radius,
+        erase=is_erase,
+        shape=(orig_h, orig_w),
+    )
+    preview = _commit_base_mask_transform(st, updated)
+    mode_str = t("Brush: Erase") if is_erase else t("Brush: Add")
+    return preview, st, gr.update(choices=[], value=[]), 0, t("status.brush_applied", mode=mode_str, count=len(scaled_pts))
+
+
 # ---------------------------------------------------------------------------
 # M4: Mask Adjustment (Grow / Shrink, Score Threshold, Invert, Clear, Undo)
 # ---------------------------------------------------------------------------
@@ -624,6 +810,82 @@ def on_grow_change(
     st.grow_px = new_px
     preview = recompute_and_render(st, record_history=False)
     return preview, st, t("status.grow_applied", px=st.grow_px)
+
+
+def on_feather_change(
+    feather_px: int,
+    state: MaskStudioState | None,
+    *,
+    record_history: bool = True,
+) -> tuple[Image.Image | None, MaskStudioState, str]:
+    """Apply `feather_px` Gaussian edge feathering to the output/preview mask."""
+    st = ensure_state(state)
+    new_px = max(0, int(feather_px))
+    if st.original_image is None:
+        st.feather_px = new_px
+        return None, st, t("status.no_image")
+
+    if record_history and new_px != st.feather_px and st.final_mask is not None:
+        st.push_history()
+
+    st.feather_px = new_px
+    preview = _render_state_preview(st)
+    return preview, st, t("status.feather_applied", px=st.feather_px)
+
+
+def _commit_base_mask_transform(
+    st: MaskStudioState,
+    new_mask: np.ndarray,
+) -> Image.Image | None:
+    """Replace active mask composition with `new_mask` as `base_mask` while preserving `feather_px`."""
+    st.base_mask = new_mask
+    st.positive_prompts.clear()
+    st.negative_prompts.clear()
+    st.click_points_pos.clear()
+    st.click_points_neg.clear()
+    st.pos_prompt_masks.clear()
+    st.neg_prompt_masks.clear()
+    st.pos_click_masks.clear()
+    st.neg_click_masks.clear()
+    st.grow_px = 0
+    st.final_mask = new_mask.copy()
+    return _render_state_preview(st)
+
+
+def on_fill_holes(
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState, Any, int, str]:
+    """Fill enclosed interior holes in `final_mask`."""
+    st = ensure_state(state)
+    if st.original_image is None:
+        return None, st, gr.update(), 0, t("status.no_image")
+    if st.final_mask is None or not st.final_mask.any():
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.no_mask")
+
+    w, h = st.original_image.size
+    st.push_history()
+    filled = mask_ops.fill_holes(st.final_mask, shape=(h, w))
+    preview = _commit_base_mask_transform(st, filled)
+    return preview, st, gr.update(choices=[], value=[]), 0, t("status.holes_filled")
+
+
+def on_remove_small_islands(
+    min_area: int,
+    state: MaskStudioState | None,
+) -> tuple[Image.Image | None, MaskStudioState, Any, int, str]:
+    """Remove disconnected foreground components smaller than `min_area` pixels."""
+    st = ensure_state(state)
+    if st.original_image is None:
+        return None, st, gr.update(), 0, t("status.no_image")
+    if st.final_mask is None or not st.final_mask.any():
+        return _render_state_preview(st), st, gr.update(), st.grow_px, t("status.no_mask")
+
+    w, h = st.original_image.size
+    area_thr = max(1, int(min_area))
+    st.push_history()
+    cleaned = mask_ops.remove_small_islands(st.final_mask, min_area=area_thr, shape=(h, w))
+    preview = _commit_base_mask_transform(st, cleaned)
+    return preview, st, gr.update(choices=[], value=[]), 0, t("status.islands_removed", min_area=area_thr)
 
 
 def on_score_threshold_change(
@@ -691,7 +953,7 @@ def on_invert_mask(
     st.grow_px = 0
     st.final_mask = inverted.copy()
 
-    preview = mask_ops.render_overlay(st.original_image, st.final_mask)
+    preview = _render_state_preview(st)
     return preview, st, gr.update(choices=[], value=[]), 0, t("status.mask_inverted")
 
 
@@ -716,10 +978,11 @@ def on_clear_mask(
     st.neg_click_masks.clear()
     st.base_mask = None
     st.grow_px = 0
+    st.feather_px = 0
     w, h = st.original_image.size
     st.final_mask = mask_ops.empty_mask((h, w))
 
-    preview = mask_ops.render_overlay(st.original_image, st.final_mask)
+    preview = _render_state_preview(st)
     return preview, st, gr.update(choices=[], value=[]), 0, t("status.mask_cleared")
 
 
@@ -731,35 +994,11 @@ def on_undo(
     if st.original_image is None:
         return None, st, t("status.no_image")
     if not st.history:
-        active_pos_masks = {
-            p: st.pos_prompt_masks[p] for p in st.positive_prompts if p in st.pos_prompt_masks
-        }
-        return (
-            mask_ops.render_overlay(
-                st.original_image,
-                st.final_mask,
-                prompt_masks=active_pos_masks,
-                color_by_prompt=st.color_by_prompt,
-                click_points_pos=st.click_points_pos,
-                click_points_neg=st.click_points_neg,
-            ),
-            st,
-            t("status.undo_empty"),
-        )
+        return _render_state_preview(st), st, t("status.undo_empty")
 
     snap = st.history.pop()
     st.restore_snapshot(snap)
-    active_pos_masks = {
-        p: st.pos_prompt_masks[p] for p in st.positive_prompts if p in st.pos_prompt_masks
-    }
-    preview = mask_ops.render_overlay(
-        st.original_image,
-        st.final_mask,
-        prompt_masks=active_pos_masks,
-        color_by_prompt=st.color_by_prompt,
-        click_points_pos=st.click_points_pos,
-        click_points_neg=st.click_points_neg,
-    )
+    preview = _render_state_preview(st)
     return preview, st, t("status.undo_applied", remaining=len(st.history))
 
 
@@ -788,8 +1027,9 @@ def on_send_to_inpaint(
         msg = t("status.no_mask")
         return (msg, "", gr.update(), gr.update()) if has_inpaint_components else (msg, "")
 
+    out_mask = get_output_mask(st)
     init_rgb, mask_rgba, payload, msg = transfer.build_inpaint_transfer_payload(
-        st.original_image, st.final_mask
+        st.original_image, out_mask
     )
     if has_inpaint_components:
         return msg, payload, gr.update(value=init_rgb), gr.update(value=mask_rgba)
@@ -802,7 +1042,7 @@ def on_download_masked_png(
     state: MaskStudioState | None,
     save_dir: str | Path | None = None,
 ) -> tuple[str, str]:
-    """Export masked RGBA PNG according to region and background options."""
+    """Export masked RGBA PNG (or B&W mask PNG) according to region and background options."""
     st = ensure_state(state)
     if st.original_image is None:
         return t("status.no_image"), ""
@@ -810,15 +1050,124 @@ def on_download_masked_png(
         return t("status.no_mask"), ""
 
     crop_to_mask = "Crop" in (crop_mode or "") or "クロップ" in (crop_mode or "")
-    white_bg = "White" in (bg_mode or "") or "白" in (bg_mode or "")
+    mask_only = "Mask Only" in (bg_mode or "") or "マスクのみ" in (bg_mode or "")
+    white_bg = (not mask_only) and ("White" in (bg_mode or "") or "白" in (bg_mode or ""))
+    out_mask = get_output_mask(st)
     _path, payload, msg = transfer.export_masked_png(
         st.original_image,
-        st.final_mask,
+        out_mask,
         crop_to_mask=crop_to_mask,
         white_background=white_bg,
+        mask_only=mask_only,
         save_dir=save_dir,
     )
     return msg, payload
+
+
+_BATCH_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def on_batch_process(
+    input_dir: str,
+    output_dir: str,
+    pos_prompt: str,
+    neg_prompt: str,
+    preset_id: str | None,
+    grow_px: int,
+    feather_px: int,
+    score_threshold: float,
+    crop_mode: str,
+    bg_mode: str,
+    ckpt_name: str | None = None,
+) -> str:
+    """Batch-apply text/preset masking to all images in `input_dir` and save PNGs to `output_dir`."""
+    in_raw = (input_dir or "").strip()
+    if not in_raw:
+        return t("status.batch_no_input_dir")
+
+    in_path = Path(in_raw)
+    if not in_path.is_dir():
+        return t("status.batch_dir_not_found", path=str(in_path))
+
+    image_files = sorted(
+        p for p in in_path.iterdir() if p.is_file() and p.suffix.lower() in _BATCH_IMAGE_EXTS
+    )
+    if not image_files:
+        return t("status.batch_no_images", path=str(in_path))
+
+    pos_list = _parse_prompt_list(pos_prompt)
+    neg_list = _parse_prompt_list(neg_prompt)
+    if preset_id:
+        preset = presets_mod.find_preset(preset_id)
+        if preset:
+            for p in preset.get("positive", []):
+                if p not in pos_list:
+                    pos_list.append(p)
+            for n in preset.get("negative", []):
+                if n not in neg_list:
+                    neg_list.append(n)
+
+    if not pos_list:
+        return t("status.no_prompt")
+
+    out_raw = (output_dir or "").strip()
+    out_path = Path(out_raw) if out_raw else (in_path / "sam3_masks")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    crop_to_mask = "Crop" in (crop_mode or "") or "クロップ" in (crop_mode or "")
+    mask_only = "Mask Only" in (bg_mode or "") or "マスクのみ" in (bg_mode or "")
+    white_bg = (not mask_only) and ("White" in (bg_mode or "") or "白" in (bg_mode or ""))
+    thr = round(float(score_threshold), 2)
+
+    processed = 0
+    empty_count = 0
+    error_count = 0
+
+    for img_file in image_files:
+        try:
+            with Image.open(img_file) as im:
+                rgb = im.convert("RGB")
+            w, h = rgb.size
+            pos_masks = [
+                sam3_backend.predict_text_mask(
+                    rgb, p, score_threshold=thr, ckpt_name=ckpt_name
+                )
+                for p in pos_list
+            ]
+            neg_masks = [
+                sam3_backend.predict_text_mask(
+                    rgb, n, score_threshold=thr, ckpt_name=ckpt_name
+                )
+                for n in neg_list
+            ]
+            final_mask = mask_ops.compute_final_mask(
+                positive_masks=pos_masks,
+                negative_masks=neg_masks,
+                shape=(h, w),
+                grow_px=int(grow_px),
+            )
+            if not final_mask.any():
+                empty_count += 1
+            out_mask = mask_ops.apply_feather(final_mask, int(feather_px))
+            out_img = transfer.render_masked_png(
+                rgb,
+                out_mask,
+                crop_to_mask=crop_to_mask,
+                white_background=white_bg,
+                mask_only=mask_only,
+            )
+            out_img.save(out_path / f"{img_file.stem}.png", format="PNG")
+            processed += 1
+        except Exception:
+            error_count += 1
+
+    return t(
+        "status.batch_complete",
+        processed=processed,
+        empty=empty_count,
+        errors=error_count,
+        out_dir=str(out_path),
+    )
 
 
 # ---------------------------------------------------------------------------

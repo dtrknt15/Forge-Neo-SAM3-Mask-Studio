@@ -45,8 +45,8 @@ def build_inpaint_pair(
     """
     rgb = original_image.convert("RGB")
     w, h = rgb.size
-    bm = mask_ops.ensure_binary_mask(final_mask, shape=(h, w))
-    mask_l = Image.fromarray(bm, mode="L")
+    gm = mask_ops.ensure_grayscale_mask(final_mask, shape=(h, w))
+    mask_l = Image.fromarray(gm, mode="L")
     alpha_full = Image.new("L", (w, h), 255)
     mask_rgba = Image.merge("RGBA", (mask_l, mask_l, mask_l, alpha_full))
     return rgb, mask_rgba
@@ -75,29 +75,33 @@ def render_masked_png(
     *,
     crop_to_mask: bool = False,
     white_background: bool = False,
+    mask_only: bool = False,
 ) -> Image.Image:
-    """Create a masked RGBA PNG from `original_image` and `final_mask` (spec §5.6).
+    """Create a masked RGBA PNG (or B&W mask PNG) from `original_image` and `final_mask` (spec §5.6).
 
+    - `mask_only=True`: grayscale mask (`0..255`) exported as RGB PNG.
     - `white_background=False` (default): transparent background (alpha = `final_mask`).
-    - `white_background=True`: non-masked pixels filled with opaque white `(255, 255, 255, 255)`.
+    - `white_background=True`: blends masked foreground onto opaque white `(255, 255, 255, 255)`.
     - `crop_to_mask=True`: crops output to the bounding box of `final_mask > 0`.
     """
     rgba = original_image.convert("RGBA")
     w, h = rgba.size
-    bm = mask_ops.ensure_binary_mask(final_mask, shape=(h, w))
+    gm = mask_ops.ensure_grayscale_mask(final_mask, shape=(h, w))
 
-    if white_background:
-        rgb_arr = np.asarray(rgba.convert("RGB"), dtype=np.uint8).copy()
-        outside = bm == 0
-        rgb_arr[outside] = 255
-        out_img = Image.fromarray(rgb_arr, mode="RGB").convert("RGBA")
+    if mask_only:
+        out_img = Image.fromarray(gm, mode="L").convert("RGB")
+    elif white_background:
+        rgb_arr = np.asarray(rgba.convert("RGB"), dtype=np.float32)
+        alpha_f = gm.astype(np.float32)[..., None] / 255.0
+        blended = np.clip(rgb_arr * alpha_f + 255.0 * (1.0 - alpha_f), 0, 255).astype(np.uint8)
+        out_img = Image.fromarray(blended, mode="RGB").convert("RGBA")
     else:
         r, g, b, _ = rgba.split()
-        alpha = Image.fromarray(bm, mode="L")
+        alpha = Image.fromarray(gm, mode="L")
         out_img = Image.merge("RGBA", (r, g, b, alpha))
 
-    if crop_to_mask and bm.any():
-        ys, xs = np.nonzero(bm > 0)
+    if crop_to_mask and gm.any():
+        ys, xs = np.nonzero(gm > 0)
         x0, x1 = int(xs.min()), int(xs.max()) + 1
         y0, y1 = int(ys.min()), int(ys.max()) + 1
         out_img = out_img.crop((x0, y0, x1, y1))
@@ -111,18 +115,21 @@ def export_masked_png(
     *,
     crop_to_mask: bool = False,
     white_background: bool = False,
+    mask_only: bool = False,
     save_dir: str | Path | None = None,
 ) -> tuple[Path, str, str]:
-    """Save masked RGBA PNG to disk and return `(saved_path, download_payload_json, status_msg)`."""
+    """Save masked PNG (or B&W mask PNG) to disk and return `(saved_path, download_payload_json, status_msg)`."""
     out_img = render_masked_png(
         original_image,
         final_mask,
         crop_to_mask=crop_to_mask,
         white_background=white_background,
+        mask_only=mask_only,
     )
     directory = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "sam3_mask_studio"
     directory.mkdir(parents=True, exist_ok=True)
-    out_path = directory / _timestamped_filename("sam3_masked")
+    prefix = "sam3_mask_bw" if mask_only else "sam3_masked"
+    out_path = directory / _timestamped_filename(prefix)
     out_img.save(out_path, format="PNG")
 
     payload = json.dumps(

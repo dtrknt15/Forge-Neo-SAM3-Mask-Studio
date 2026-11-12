@@ -429,3 +429,61 @@ def predict_point_mask(
         with _autocast_ctx():
             state = processor._forward_grounding(state)
         return _extract_binary_masks_from_state(state, target_shape=target_shape)
+
+
+def predict_box_mask(
+    image: Image.Image,
+    box_xyxy: Sequence[float],
+    *,
+    multimask_output: bool = True,
+    ckpt_name: str | None = None,
+) -> np.ndarray:
+    """Run SAM3 bounding-box segmentation and return a 2D uint8 (0/255) mask.
+
+    `box_xyxy`: `(x0, y0, x1, y1)` in original image pixel coordinates.
+    """
+    w, h = image.size
+    target_shape = (h, w)
+    if len(box_xyxy) != 4:
+        return mask_ops.empty_mask(target_shape)
+
+    x0 = max(0.0, min(float(w), float(min(box_xyxy[0], box_xyxy[2]))))
+    y0 = max(0.0, min(float(h), float(min(box_xyxy[1], box_xyxy[3]))))
+    x1 = max(0.0, min(float(w), float(max(box_xyxy[0], box_xyxy[2]))))
+    y1 = max(0.0, min(float(h), float(max(box_xyxy[1], box_xyxy[3]))))
+    if (x1 - x0) < 2.0 or (y1 - y0) < 2.0:
+        return mask_ops.empty_mask(target_shape)
+
+    with _LOCK:
+        ok, msg = ensure_loaded(ckpt_name)
+        if not ok:
+            raise RuntimeError(msg)
+
+        model = _STATE["model"]
+        processor = _STATE["processor"]
+        state = _get_or_set_image_state(image)
+
+        if getattr(model, "inst_interactive_predictor", None) is not None and "sam2_backbone_out" in state.get("backbone_out", {}):
+            box_np = np.asarray([x0, y0, x1, y1], dtype=np.float32)
+            with _autocast_ctx():
+                masks_np, iou_np, _low_res = model.predict_inst(
+                    state,
+                    box=box_np,
+                    multimask_output=bool(multimask_output),
+                    normalize_coords=True,
+                )
+            if masks_np is None or len(masks_np) == 0:
+                return mask_ops.empty_mask(target_shape)
+            best_idx = int(np.argmax(iou_np)) if iou_np is not None and len(iou_np) > 0 else 0
+            best_mask = masks_np[best_idx]
+            return mask_ops.ensure_binary_mask(best_mask, shape=target_shape)
+
+        # Fallback: geometric box prompt on detector
+        state["geometric_prompt"] = model._get_dummy_prompt()
+        cx = ((x0 + x1) * 0.5) / max(1.0, float(w))
+        cy = ((y0 + y1) * 0.5) / max(1.0, float(h))
+        bw = (x1 - x0) / max(1.0, float(w))
+        bh = (y1 - y0) / max(1.0, float(h))
+        with _autocast_ctx():
+            state = processor.add_geometric_prompt(box=[cx, cy, bw, bh], label=True, state=state)
+        return _extract_binary_masks_from_state(state, target_shape=target_shape)
