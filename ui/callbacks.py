@@ -1017,6 +1017,7 @@ def on_undo_with_ui(
 def on_send_to_inpaint(
     state: MaskStudioState | None,
     has_inpaint_components: bool = False,
+    auto_unload: bool = False,
 ) -> tuple[Any, ...]:
     """Prepare image + mask pair for `img2img` Inpaint upload."""
     st = ensure_state(state)
@@ -1031,6 +1032,10 @@ def on_send_to_inpaint(
     init_rgb, mask_rgba, payload, msg = transfer.build_inpaint_transfer_payload(
         st.original_image, out_mask
     )
+    if auto_unload and sam3_backend.is_loaded():
+        sam3_backend.unload_model()
+        w, h = st.original_image.size
+        msg = t("status.sent_to_inpaint_unloaded", width=w, height=h)
     if has_inpaint_components:
         return msg, payload, gr.update(value=init_rgb), gr.update(value=mask_rgba)
     return msg, payload
@@ -1079,6 +1084,12 @@ def on_batch_process(
     crop_mode: str,
     bg_mode: str,
     ckpt_name: str | None = None,
+    fill_holes_opt: bool = False,
+    remove_islands_opt: bool = False,
+    min_island_area: int = 64,
+    invert_opt: bool = False,
+    skip_empty: bool = False,
+    progress: Any = gr.Progress(),
 ) -> str:
     """Batch-apply text/preset masking to all images in `input_dir` and save PNGs to `output_dir`."""
     in_raw = (input_dir or "").strip()
@@ -1118,12 +1129,19 @@ def on_batch_process(
     mask_only = "Mask Only" in (bg_mode or "") or "マスクのみ" in (bg_mode or "")
     white_bg = (not mask_only) and ("White" in (bg_mode or "") or "白" in (bg_mode or ""))
     thr = round(float(score_threshold), 2)
+    min_area = max(1, int(min_island_area or 64))
 
     processed = 0
     empty_count = 0
     error_count = 0
+    total = len(image_files)
 
-    for img_file in image_files:
+    for idx, img_file in enumerate(image_files):
+        if progress is not None:
+            try:
+                progress((idx, total), desc=f"{img_file.name} ({idx + 1}/{total})")
+            except Exception:
+                pass
         try:
             with Image.open(img_file) as im:
                 rgb = im.convert("RGB")
@@ -1146,8 +1164,20 @@ def on_batch_process(
                 shape=(h, w),
                 grow_px=int(grow_px),
             )
-            if not final_mask.any():
+            if fill_holes_opt:
+                final_mask = mask_ops.fill_holes(final_mask)
+            if remove_islands_opt:
+                final_mask = mask_ops.remove_small_islands(final_mask, min_area=min_area)
+
+            is_empty = not final_mask.any()
+            if is_empty:
                 empty_count += 1
+                if skip_empty:
+                    continue
+
+            if invert_opt:
+                final_mask = mask_ops.invert_mask(final_mask)
+
             out_mask = mask_ops.apply_feather(final_mask, int(feather_px))
             out_img = transfer.render_masked_png(
                 rgb,
@@ -1158,8 +1188,9 @@ def on_batch_process(
             )
             out_img.save(out_path / f"{img_file.stem}.png", format="PNG")
             processed += 1
-        except Exception:
+        except Exception as exc:
             error_count += 1
+            print(f"[SAM3 Mask Studio] Batch error on {img_file.name}: {exc}", flush=True)
 
     return t(
         "status.batch_complete",

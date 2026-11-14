@@ -268,6 +268,11 @@ def build_tab(
                             "Download Masked PNG",
                             elem_id="sam3_ms_download_png_btn",
                         )
+                    auto_unload_chk = gr.Checkbox(
+                        label="Auto-unload SAM3 model after sending to Inpaint",
+                        value=False,
+                        elem_id="sam3_ms_auto_unload_chk",
+                    )
                     with gr.Row():
                         crop_mode_radio = gr.Radio(
                             choices=["Full Image", "Crop to Mask"],
@@ -388,6 +393,27 @@ def build_tab(
                     variant="primary",
                     scale=1,
                     elem_id="sam3_ms_batch_run_btn",
+                )
+            with gr.Row():
+                batch_fill_holes_chk = gr.Checkbox(
+                    label="Fill Holes",
+                    value=False,
+                    elem_id="sam3_ms_batch_fill_holes",
+                )
+                batch_remove_islands_chk = gr.Checkbox(
+                    label="Remove Small Islands",
+                    value=False,
+                    elem_id="sam3_ms_batch_remove_islands",
+                )
+                batch_invert_chk = gr.Checkbox(
+                    label="Invert Mask",
+                    value=False,
+                    elem_id="sam3_ms_batch_invert",
+                )
+                batch_skip_empty_chk = gr.Checkbox(
+                    label="Skip Empty Masks",
+                    value=False,
+                    elem_id="sam3_ms_batch_skip_empty",
                 )
 
         # ===================================================================
@@ -597,12 +623,16 @@ def build_tab(
         if has_inpaint:
             inpaint_outputs.extend([inpaint_base_comp, inpaint_mask_comp])
 
-        def _send_inpaint_wrapper(st: callbacks.MaskStudioState):
-            return callbacks.on_send_to_inpaint(st, has_inpaint_components=has_inpaint)
+        def _send_inpaint_wrapper(st: callbacks.MaskStudioState, auto_unload: bool):
+            return callbacks.on_send_to_inpaint(
+                st,
+                has_inpaint_components=has_inpaint,
+                auto_unload=bool(auto_unload),
+            )
 
         send_event = send_inpaint_btn.click(
             fn=_send_inpaint_wrapper,
-            inputs=[state],
+            inputs=[state, auto_unload_chk],
             outputs=inpaint_outputs,
         )
         if has_inpaint:
@@ -685,6 +715,11 @@ def build_tab(
                 crop_mode_radio,
                 bg_mode_radio,
                 ckpt_dropdown,
+                batch_fill_holes_chk,
+                batch_remove_islands_chk,
+                min_island_area,
+                batch_invert_chk,
+                batch_skip_empty_chk,
             ],
             outputs=[status_bar],
         )

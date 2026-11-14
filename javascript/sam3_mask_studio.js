@@ -188,6 +188,73 @@
     return "ok";
   }
 
+  function focusSam3MaskTab() {
+    const root = getRoot();
+    const target = root.querySelector("#sam3_ms_input_image") || root.querySelector("#sam3_ms_preview_image");
+    if (!target) return false;
+    const tabItem = target.closest(".tabitem");
+    if (!tabItem || !tabItem.parentElement) return false;
+    const tabsContainer = tabItem.parentElement;
+    const items = Array.from(tabsContainer.children).filter(
+      (el) => el.classList && el.classList.contains("tabitem")
+    );
+    const idx = items.indexOf(tabItem);
+    if (idx < 0) return false;
+    const nav = tabsContainer.querySelector(":scope > .tab-nav");
+    if (!nav) return false;
+    const btns = Array.from(nav.querySelectorAll("button"));
+    if (btns[idx]) {
+      btns[idx].click();
+      return true;
+    }
+    return false;
+  }
+
+  async function sendFromGallery(tabname) {
+    const root = getRoot();
+    const gallery = root.querySelector(`#${tabname}_gallery`);
+    if (!gallery) return "no_gallery";
+
+    const img =
+      gallery.querySelector(".preview img") ||
+      gallery.querySelector(".thumbnail-item.selected img, .thumbnail-small.selected img, button.selected img") ||
+      gallery.querySelector("img");
+    if (!img || !img.src) return "no_image";
+
+    try {
+      const resp = await fetch(img.src);
+      const blob = await resp.blob();
+      const file = new File([blob], `sam3_from_${tabname}.png`, {
+        type: blob.type || "image/png",
+      });
+
+      focusSam3MaskTab();
+
+      const inputContainer = root.querySelector("#sam3_ms_input_image");
+      if (!inputContainer) return "no_input";
+
+      if (!inputContainer.querySelector("input[type=file]")) {
+        const clearBtn = inputContainer.querySelector(
+          'button[aria-label="Clear"], button[aria-label="Remove Image"], .icon-buttons button'
+        );
+        if (clearBtn) {
+          clearBtn.click();
+        }
+        setTimeout(() => {
+          setFileInput(inputContainer, file);
+        }, 80);
+      } else {
+        setFileInput(inputContainer, file);
+      }
+      try {
+        window.scrollTo(0, 0);
+      } catch (e) {}
+      return "ok";
+    } catch (e) {
+      return "fetch_error";
+    }
+  }
+
   // =========================================================================
   // Interactive Preview Controller (Zoom, Pan, Right-Click Exclude, Ctrl+Z)
   // =========================================================================
@@ -888,6 +955,7 @@
     window.sam3MaskStudioDownloadPng = downloadMaskedPng;
     window.sam3MaskStudioResetZoom = resetZoom;
     window.sam3MaskStudioGrabImg2Img = grabImg2ImgCanvas;
+    window.sam3MaskStudioSendFromGallery = sendFromGallery;
     installDelegatedListeners();
   }
 })();

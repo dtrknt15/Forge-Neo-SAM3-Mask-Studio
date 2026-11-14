@@ -316,9 +316,11 @@ def _extract_binary_masks_from_state(
             else:
                 scores_np = np.asarray(scores_raw, dtype=np.float32).reshape(-1)
             if len(scores_np) == len(masks_list):
-                filtered = [m for m, s in zip(masks_list, scores_np) if float(s) >= float(score_threshold)]
-                if filtered:
-                    masks_list = filtered
+                masks_list = [
+                    m for m, s in zip(masks_list, scores_np) if float(s) >= float(score_threshold)
+                ]
+                if not masks_list:
+                    return mask_ops.empty_mask(target_shape)
         except Exception:
             pass
 

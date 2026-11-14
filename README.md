@@ -36,10 +36,10 @@ Standalone **SAM3 (Segment Anything Model 3)** mask creation, interactive refine
   - **Detection Score Threshold**: Fine-tune SAM3 text detection sensitivity (`0.05` – `0.95`).
   - **Multi-Step Undo (`Ctrl + Z`)**: Full state snapshot history across prompts, clicks, boxes, brush strokes, adjustments, inversion, and clear.
 - **Import, Export & Batch Processing**:
-  - **Load Image from img2img** & **Import Mask PNG**: Pull the active `img2img` image or load an existing mask PNG as a base mask for further SAM3 refinement.
-  - **Send to Inpaint upload**: Transfers both the original image and the generated mask (including feathering) into `img2img -> Inpaint upload` and switches directly to the `Inpaint upload` sub-tab.
+  - **Send to SAM3 Mask (`🎭`)** & **Load Image from img2img** & **Import Mask PNG**: Send generated images directly from `txt2img` / `img2img` / `extras` galleries, pull the active `img2img` image, or load an existing mask PNG as a base mask for further SAM3 refinement.
+  - **Send to Inpaint upload**: Transfers both the original image and the generated mask (including feathering) into `img2img -> Inpaint upload` and switches directly to the `Inpaint upload` sub-tab (with optional **Auto-unload SAM3 model** to free VRAM).
   - **Download Masked PNG**: Exports `Full Image` or `Crop to Mask` PNGs with `Transparent`, `White Background`, or `Mask Only (B&W)` output.
-  - **Batch Processing**: Apply text prompts or presets across an entire folder of images with your Grow/Feather/Threshold and export settings.
+  - **Batch Processing**: Apply text prompts or presets across an entire folder of images with progress tracking, Grow/Feather/Threshold, Fill Holes, Remove Small Islands, Invert Mask, Skip Empty Masks, and export settings.
 - **BYOT (Bring Your Own Token) Setup**:
   - Safe Hugging Face access check and user-triggered download for gated `facebook/sam3` weights, plus manual placement support in `<Forge-Neo>/models/sam3/`.
 
@@ -91,10 +91,10 @@ This extension uses WebUI's standard `localizations/*.json` mechanism:
   - **検出スコア閾値**: テキストプロンプトの検出感度を `0.05 〜 0.95` で調整可能
   - **元に戻す (`Ctrl + Z`)**: プロンプト・クリック・矩形・ブラシ・調整・反転・クリアを含む操作履歴（直近10件）をスナップショット復元
 - **入出力 ＆ バッチ処理**:
-  - **img2img から画像を取得** ＆ **既存マスクPNG読込**: `img2img` からの画像取得や既存マスクの読み込み・再編集に対応
-  - **Inpaint upload へ転送**: 元画像とマスク（フェザー反映済み）を `img2img` の `Inpaint upload` へ同時セットし、直接タブへジャンプ
+  - **ギャラリーから送信 (`🎭`)**・**img2img から画像を取得**・**既存マスクPNG読込**: `txt2img` / `img2img` / `extras` ギャラリーからのワンクリック送信、`img2img` からの画像取得、既存マスクの読み込み・再編集に対応
+  - **Inpaint upload へ転送**: 元画像とマスク（フェザー反映済み）を `img2img` の `Inpaint upload` へ同時セットし、直接タブへジャンプ（転送後の **SAM3 モデル自動アンロード / VRAM 解放** オプション付き）
   - **マスク適用PNGをDL**: 全体／マスク領域クロップで `透過`・`白背景`・`マスクのみ (白黒)` PNG を書き出し
-  - **バッチ処理（フォルダ一括）**: 指定フォルダ内の全画像に対し、プロンプト／プリセット＋現在の調整・出力設定で一括マスキング＆PNG保存
+  - **バッチ処理（フォルダ一括）**: 指定フォルダ内の全画像に対し、進捗表示付きでプロンプト／プリセット＋調整（拡張/ぼかし/閾値/穴埋め/小ノイズ除去/反転/空マスクスキップ）・出力設定を一括適用して PNG 保存
 
 ### 導入方法
 1. Forge Neo の **Extensions** -> **Install from URL** を開きます。

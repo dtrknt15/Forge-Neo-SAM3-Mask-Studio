@@ -51,6 +51,39 @@ def on_after_component(component: Any, **kwargs: Any) -> None:
         _INPAINT_BASE = component
     elif elem_id == "img_inpaint_mask":
         _INPAINT_MASK = component
+    elif elem_id in ("txt2img_send_to_inpaint", "img2img_send_to_inpaint", "extras_send_to_inpaint"):
+        tabname = elem_id.split("_send_to_inpaint", 1)[0]
+        try:
+            import gradio as gr
+
+            try:
+                from modules.ui_components import ToolButton
+
+                btn = ToolButton(
+                    "🎭",
+                    elem_id=f"{tabname}_send_to_sam3_mask",
+                    tooltip="Send image to SAM3 Mask Studio",
+                )
+            except Exception:
+                btn = gr.Button(
+                    "SAM3",
+                    elem_id=f"{tabname}_send_to_sam3_mask",
+                )
+            btn.click(
+                fn=None,
+                inputs=[],
+                outputs=[],
+                js=(
+                    f"() => {{"
+                    f" if (window.sam3MaskStudioSendFromGallery) {{"
+                    f"   window.sam3MaskStudioSendFromGallery('{tabname}');"
+                    f" }}"
+                    f" return [];"
+                    f"}}"
+                ),
+            )
+        except Exception:
+            pass
 
 
 def on_ui_tabs():
