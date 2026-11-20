@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import tempfile
 import time
+import zipfile
 from itertools import count
 from pathlib import Path
 
@@ -140,3 +142,57 @@ def export_masked_png(
     )
     msg = t("status.png_exported", path=str(out_path), width=out_img.width, height=out_img.height)
     return out_path, payload, msg
+
+
+def _safe_layer_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_\-]+", "_", (name or "").strip()).strip("_")
+    return cleaned[:48] or "layer"
+
+
+def export_layers_zip(
+    original_image: Image.Image,
+    final_mask: np.ndarray,
+    *,
+    pos_prompt_masks: dict[str, np.ndarray] | None = None,
+    neg_prompt_masks: dict[str, np.ndarray] | None = None,
+    save_dir: str | Path | None = None,
+) -> tuple[Path, str, str]:
+    """Export final mask, RGBA cutout, and per-prompt mask layers into a ZIP archive."""
+    directory = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "sam3_mask_studio"
+    directory.mkdir(parents=True, exist_ok=True)
+    zip_name = _timestamped_filename("sam3_layers").replace(".png", ".zip")
+    zip_path = directory / zip_name
+
+    buf = io.BytesIO()
+    layer_count = 0
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        final_bw = render_masked_png(original_image, final_mask, mask_only=True)
+        final_rgba = render_masked_png(original_image, final_mask, mask_only=False)
+        for fname, img in (("final_mask.png", final_bw), ("final_cutout_rgba.png", final_rgba)):
+            ibuf = io.BytesIO()
+            img.save(ibuf, format="PNG")
+            zf.writestr(fname, ibuf.getvalue())
+            layer_count += 1
+
+        for prefix, pdict in (("pos", pos_prompt_masks or {}), ("neg", neg_prompt_masks or {})):
+            for idx, (prompt_key, pmask) in enumerate(pdict.items(), start=1):
+                safe = _safe_layer_name(prompt_key)
+                mask_img = render_masked_png(original_image, pmask, mask_only=True)
+                cut_img = render_masked_png(original_image, pmask, mask_only=False)
+                for suffix, img in (("mask.png", mask_img), ("cutout.png", cut_img)):
+                    ibuf = io.BytesIO()
+                    img.save(ibuf, format="PNG")
+                    zf.writestr(f"{prefix}_{idx:02d}_{safe}_{suffix}", ibuf.getvalue())
+                layer_count += 1
+
+    zip_bytes = buf.getvalue()
+    zip_path.write_bytes(zip_bytes)
+    payload = json.dumps(
+        {
+            "image": base64.b64encode(zip_bytes).decode("ascii"),
+            "mime": "application/zip",
+            "filename": zip_path.name,
+        }
+    )
+    msg = t("status.layers_zip_exported", path=str(zip_path), count=layer_count)
+    return zip_path, payload, msg

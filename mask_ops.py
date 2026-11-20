@@ -176,6 +176,64 @@ def apply_feather(mask: np.ndarray, feather_px: int) -> np.ndarray:
     return np.clip(blurred, 0, 255).astype(np.uint8)
 
 
+def apply_guided_refine(
+    image: Image.Image | np.ndarray,
+    mask: np.ndarray,
+    radius: int = 8,
+    eps: float = 1e-2,
+) -> np.ndarray:
+    """Edge-aware mask refinement using a fast box-filter Guided Filter against `image`."""
+    r = int(radius)
+    gm = ensure_grayscale_mask(mask)
+    if r <= 0 or not gm.any():
+        return gm
+
+    if isinstance(image, Image.Image):
+        guide_u8 = np.asarray(image.convert("L"), dtype=np.uint8)
+    else:
+        arr = np.asarray(image)
+        if arr.ndim == 3:
+            guide_u8 = cv2.cvtColor(arr[..., :3], cv2.COLOR_RGB2GRAY)
+        else:
+            guide_u8 = arr.astype(np.uint8)
+
+    h, w = gm.shape
+    if guide_u8.shape != (h, w):
+        guide_u8 = cv2.resize(guide_u8, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    I = guide_u8.astype(np.float32) / 255.0
+    p = gm.astype(np.float32) / 255.0
+    ksize = (2 * r + 1, 2 * r + 1)
+
+    mean_I = cv2.boxFilter(I, cv2.CV_32F, ksize)
+    mean_p = cv2.boxFilter(p, cv2.CV_32F, ksize)
+    corr_I = cv2.boxFilter(I * I, cv2.CV_32F, ksize)
+    corr_Ip = cv2.boxFilter(I * p, cv2.CV_32F, ksize)
+
+    var_I = corr_I - mean_I * mean_I
+    cov_Ip = corr_Ip - mean_I * mean_p
+
+    a = cov_Ip / (var_I + float(eps))
+    b = mean_p - a * mean_I
+
+    mean_a = cv2.boxFilter(a, cv2.CV_32F, ksize)
+    mean_b = cv2.boxFilter(b, cv2.CV_32F, ksize)
+
+    q = np.clip(mean_a * I + mean_b, 0.0, 1.0)
+    return np.clip(np.round(q * 255.0), 0, 255).astype(np.uint8)
+
+
+def apply_edge_smooth(mask: np.ndarray, smooth_px: int = 0) -> np.ndarray:
+    """Smooth jagged binary mask contours using Gaussian blur + midpoint re-thresholding."""
+    bm = ensure_binary_mask(mask)
+    px = int(smooth_px)
+    if px <= 0 or not bm.any():
+        return bm
+    sigma = max(0.5, float(px) * 0.6)
+    blurred = cv2.GaussianBlur(bm, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    return np.where(blurred > 127, 255, 0).astype(np.uint8)
+
+
 def fill_holes(
     mask: np.ndarray | Image.Image | None,
     shape: tuple[int, int] | None = None,
@@ -224,23 +282,63 @@ def apply_brush_stroke(
     radius: int = 12,
     *,
     erase: bool = False,
+    hardness: float = 1.0,
+    opacity: float = 1.0,
     shape: tuple[int, int] | None = None,
 ) -> np.ndarray:
-    """Draw a freehand brush (`erase=False`) or eraser (`erase=True`) stroke onto a binary mask."""
-    bm = ensure_binary_mask(mask, shape=shape).copy()
+    """Draw a freehand brush (`erase=False`) or eraser (`erase=True`) stroke onto a mask.
+
+    When `hardness == 1.0` and `opacity == 1.0`, performs a strict binary 0/255 stroke.
+    Lower `hardness` or `opacity` produces soft-edged grayscale alpha strokes.
+    """
+    hard = float(max(0.05, min(1.0, hardness)))
+    opac = float(max(0.05, min(1.0, opacity)))
+    is_hard_opaque = hard >= 0.99 and opac >= 0.99
+
+    base = (
+        ensure_binary_mask(mask, shape=shape).copy()
+        if is_hard_opaque
+        else ensure_grayscale_mask(mask, shape=shape).copy()
+    )
     if not points:
-        return bm
+        return base
 
     r = max(1, int(radius))
-    val = 0 if erase else 255
     pts = [(int(x), int(y)) for x, y in points]
+
+    if is_hard_opaque:
+        val = 0 if erase else 255
+        if len(pts) == 1:
+            cv2.circle(base, pts[0], r, val, thickness=-1, lineType=cv2.LINE_8)
+        else:
+            for i in range(len(pts) - 1):
+                cv2.line(base, pts[i], pts[i + 1], val, thickness=r * 2, lineType=cv2.LINE_8)
+            cv2.circle(base, pts[-1], r, val, thickness=-1, lineType=cv2.LINE_8)
+        return base
+
+    stroke = np.zeros_like(base, dtype=np.uint8)
     if len(pts) == 1:
-        cv2.circle(bm, pts[0], r, val, thickness=-1, lineType=cv2.LINE_8)
+        cv2.circle(stroke, pts[0], r, 255, thickness=-1, lineType=cv2.LINE_AA)
     else:
         for i in range(len(pts) - 1):
-            cv2.line(bm, pts[i], pts[i + 1], val, thickness=r * 2, lineType=cv2.LINE_8)
-        cv2.circle(bm, pts[-1], r, val, thickness=-1, lineType=cv2.LINE_8)
-    return bm
+            cv2.line(stroke, pts[i], pts[i + 1], 255, thickness=r * 2, lineType=cv2.LINE_AA)
+        cv2.circle(stroke, pts[-1], r, 255, thickness=-1, lineType=cv2.LINE_AA)
+
+    stroke_f = stroke.astype(np.float32) / 255.0
+    if hard < 0.99:
+        sigma = max(0.5, (1.0 - hard) * float(r) * 0.45)
+        stroke_f = cv2.GaussianBlur(stroke_f, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        max_s = float(stroke_f.max())
+        if max_s > 1e-6:
+            stroke_f = stroke_f / max_s
+    alpha_f = np.clip(stroke_f * opac, 0.0, 1.0)
+
+    base_f = base.astype(np.float32)
+    if erase:
+        out_f = base_f * (1.0 - alpha_f)
+    else:
+        out_f = base_f + (255.0 - base_f) * alpha_f
+    return np.clip(np.round(out_f), 0, 255).astype(np.uint8)
 
 
 def compute_final_mask(
@@ -290,6 +388,15 @@ def scale_click_coords(
     return x, y
 
 
+def _make_checkerboard(h: int, w: int, tile: int = 16) -> np.ndarray:
+    """Create a subtle light/dark gray checkerboard RGB float32 array of shape (h, w, 3)."""
+    ys = (np.arange(h) // tile)[:, None]
+    xs = (np.arange(w) // tile)[None, :]
+    dark = ((ys + xs) & 1).astype(np.float32)
+    bg = np.where(dark[..., None] > 0, 175.0, 225.0).astype(np.float32)
+    return np.repeat(bg, 3, axis=2)
+
+
 def render_overlay(
     image: Image.Image,
     final_mask: np.ndarray | None = None,
@@ -298,13 +405,17 @@ def render_overlay(
     color_by_prompt: bool = False,
     click_points_pos: Sequence[tuple[int, int]] | None = None,
     click_points_neg: Sequence[tuple[int, int]] | None = None,
+    refine_points: Sequence[tuple[int, int]] | None = None,
+    refine_labels: Sequence[int] | None = None,
     alpha: float = 0.45,
     view_mode: str = "overlay",
 ) -> Image.Image:
-    """Render preview image according to `view_mode` (`'overlay'`, `'mask_only'`, `'original'`).
+    """Render preview image according to `view_mode` (`'overlay'`, `'mask_only'`, `'cutout'`, `'outline'`, `'original'`).
 
     - `'original'`: returns the clean original RGB image for before/after comparison.
     - `'mask_only'`: returns the grayscale mask (`0..255`) as an RGB image.
+    - `'cutout'`: alpha-blends `image` over a checkerboard background using `final_mask`.
+    - `'outline'`: draws crisp mask contour outlines over `image`.
     - `'overlay'` (default): semi-transparent mask overlay onto `image`, with optional
       per-prompt color coding and positive/negative click markers.
     """
@@ -320,27 +431,45 @@ def render_overlay(
         return Image.fromarray(gm, mode="L").convert("RGB")
 
     base_arr = np.asarray(base_rgb, dtype=np.float32)
-    out_arr = base_arr.copy()
-    alpha_clamped = float(max(0.0, min(1.0, alpha)))
 
-    if color_by_prompt and prompt_masks:
-        for idx, (_key, pmask) in enumerate(prompt_masks.items()):
-            bm = ensure_binary_mask(pmask, shape=(h, w)) > 0
-            if not bm.any():
-                continue
-            color = np.array(PROMPT_PALETTE[idx % len(PROMPT_PALETTE)], dtype=np.float32)
-            out_arr[bm] = out_arr[bm] * (1.0 - alpha_clamped) + color * alpha_clamped
-    elif final_mask is not None:
-        gm = ensure_grayscale_mask(final_mask, shape=(h, w))
-        if gm.any():
-            color = np.array(DEFAULT_FINAL_COLOR, dtype=np.float32)
-            weight = (gm.astype(np.float32)[..., None] / 255.0) * alpha_clamped
-            out_arr = out_arr * (1.0 - weight) + color * weight
+    if mode == "cutout":
+        gm = ensure_grayscale_mask(final_mask, shape=(h, w)) if final_mask is not None else empty_mask((h, w))
+        checker = _make_checkerboard(h, w, tile=max(8, min(24, min(w, h) // 32)))
+        alpha_f = gm.astype(np.float32)[..., None] / 255.0
+        comp = base_arr * alpha_f + checker * (1.0 - alpha_f)
+        result = Image.fromarray(np.clip(comp, 0, 255).astype(np.uint8), mode="RGB")
+    elif mode == "outline":
+        out_bgr = np.asarray(base_rgb, dtype=np.uint8).copy()
+        if final_mask is not None:
+            bm = ensure_binary_mask(final_mask, shape=(h, w))
+            if bm.any():
+                contours, _ = cv2.findContours(bm, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+                thickness = max(2, int(round(min(w, h) * 0.004)))
+                cv2.drawContours(out_bgr, contours, -1, (0, 0, 0), thickness=thickness + 2, lineType=cv2.LINE_AA)
+                cv2.drawContours(out_bgr, contours, -1, DEFAULT_FINAL_COLOR, thickness=thickness, lineType=cv2.LINE_AA)
+        result = Image.fromarray(out_bgr, mode="RGB")
+    else:
+        out_arr = base_arr.copy()
+        alpha_clamped = float(max(0.0, min(1.0, alpha)))
 
-    result = Image.fromarray(np.clip(out_arr, 0, 255).astype(np.uint8), mode="RGB")
+        if color_by_prompt and prompt_masks:
+            for idx, (_key, pmask) in enumerate(prompt_masks.items()):
+                bm = ensure_binary_mask(pmask, shape=(h, w)) > 0
+                if not bm.any():
+                    continue
+                color = np.array(PROMPT_PALETTE[idx % len(PROMPT_PALETTE)], dtype=np.float32)
+                out_arr[bm] = out_arr[bm] * (1.0 - alpha_clamped) + color * alpha_clamped
+        elif final_mask is not None:
+            gm = ensure_grayscale_mask(final_mask, shape=(h, w))
+            if gm.any():
+                color = np.array(DEFAULT_FINAL_COLOR, dtype=np.float32)
+                weight = (gm.astype(np.float32)[..., None] / 255.0) * alpha_clamped
+                out_arr = out_arr * (1.0 - weight) + color * weight
+
+        result = Image.fromarray(np.clip(out_arr, 0, 255).astype(np.uint8), mode="RGB")
 
     # Draw click markers if present
-    if click_points_pos or click_points_neg:
+    if click_points_pos or click_points_neg or refine_points:
         draw = ImageDraw.Draw(result)
         radius = max(4, int(round(min(w, h) * 0.008)))
         for x, y in click_points_pos or ():
@@ -357,5 +486,17 @@ def render_overlay(
                 outline=(255, 255, 255),
                 width=2,
             )
+        if refine_points:
+            lbls = list(refine_labels) if refine_labels is not None else [1] * len(refine_points)
+            r_ref = radius + 2
+            for (x, y), lbl in zip(refine_points, lbls):
+                fill_col = (0, 255, 160) if int(lbl) == 1 else (255, 80, 120)
+                ring_col = (255, 255, 0)
+                draw.ellipse(
+                    (x - r_ref, y - r_ref, x + r_ref, y + r_ref),
+                    fill=fill_col,
+                    outline=ring_col,
+                    width=2,
+                )
 
     return result

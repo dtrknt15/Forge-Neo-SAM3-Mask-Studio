@@ -16,13 +16,13 @@
     return typeof gradioApp === "function" ? gradioApp() : document;
   }
 
-  function b64ToBlob(b64) {
+  function b64ToBlob(b64, mime) {
     const bin = atob(b64);
     const arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) {
       arr[i] = bin.charCodeAt(i);
     }
-    return new Blob([arr], { type: "image/png" });
+    return new Blob([arr], { type: mime || "image/png" });
   }
 
   function setFileInput(container, file) {
@@ -174,9 +174,10 @@
     }
     const b64 = data && data.image;
     const filename = (data && data.filename) || "sam3_masked.png";
+    const mime = (data && data.mime) || "image/png";
     if (!b64) return "missing_b64";
 
-    const blob = b64ToBlob(b64);
+    const blob = b64ToBlob(b64, mime);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

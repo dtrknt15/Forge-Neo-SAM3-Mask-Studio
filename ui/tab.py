@@ -76,6 +76,11 @@ def build_tab(
                     scale=1,
                     elem_id="sam3_ms_unload_btn",
                 )
+                refresh_vram_btn = gr.Button(
+                    "VRAM Status",
+                    scale=1,
+                    elem_id="sam3_ms_vram_btn",
+                )
             setup_status = gr.Markdown(
                 f"Status: Checkpoint detected (`{default_ckpt}`)"
                 if model_ready
@@ -156,6 +161,13 @@ def build_tab(
                         value=[],
                         elem_id="sam3_ms_active_prompts",
                     )
+                    with gr.Accordion("Detected Instances (Instance Picker)", open=False, elem_id="sam3_ms_instances_acc"):
+                        instances_group = gr.CheckboxGroup(
+                            label="Detected Instances (uncheck to exclude)",
+                            choices=[],
+                            value=[],
+                            elem_id="sam3_ms_instances_group",
+                        )
                     with gr.Accordion("Manage Custom Presets", open=False, elem_id="sam3_ms_custom_preset_acc"):
                         with gr.Row():
                             custom_preset_name = gr.Textbox(
@@ -207,12 +219,47 @@ def build_tab(
                         visible=False,
                         elem_id="sam3_ms_brush_size",
                     )
+                    brush_hardness_slider = gr.Slider(
+                        label="Brush Hardness",
+                        minimum=0.10,
+                        maximum=1.00,
+                        step=0.05,
+                        value=1.00,
+                        scale=1,
+                        visible=False,
+                        elem_id="sam3_ms_brush_hardness",
+                    )
+                with gr.Row(elem_id="sam3_ms_refine_row"):
+                    refine_mode_chk = gr.Checkbox(
+                        label="Multi-point Object Refine",
+                        value=False,
+                        scale=2,
+                        elem_id="sam3_ms_refine_mode",
+                    )
+                    commit_refine_btn = gr.Button(
+                        "Commit Object",
+                        size="sm",
+                        scale=1,
+                        elem_id="sam3_ms_commit_refine_btn",
+                    )
+                    undo_refine_pt_btn = gr.Button(
+                        "Undo Point",
+                        size="sm",
+                        scale=1,
+                        elem_id="sam3_ms_undo_refine_pt_btn",
+                    )
+                    clear_refine_btn = gr.Button(
+                        "Clear Points",
+                        size="sm",
+                        scale=1,
+                        elem_id="sam3_ms_clear_refine_btn",
+                    )
                 with gr.Row(elem_id="sam3_ms_preview_view_row"):
                     preview_mode_radio = gr.Radio(
-                        choices=["Overlay", "Mask Only", "Original"],
+                        choices=["Overlay", "Mask Only", "Cutout", "Outline", "Original"],
                         value="Overlay",
                         label="Preview View",
-                        scale=2,
+                        scale=3,
                         elem_id="sam3_ms_preview_mode",
                     )
                     overlay_opacity_slider = gr.Slider(
@@ -267,6 +314,10 @@ def build_tab(
                         download_png_btn = gr.Button(
                             "Download Masked PNG",
                             elem_id="sam3_ms_download_png_btn",
+                        )
+                        export_layers_zip_btn = gr.Button(
+                            "Export Layers (ZIP)",
+                            elem_id="sam3_ms_export_layers_btn",
                         )
                     auto_unload_chk = gr.Checkbox(
                         label="Auto-unload SAM3 model after sending to Inpaint",
@@ -324,6 +375,25 @@ def build_tab(
                     value=callbacks.DEFAULT_SCORE_THRESHOLD,
                     scale=1,
                     elem_id="sam3_ms_score_thr_slider",
+                )
+            with gr.Row():
+                edge_refine_slider = gr.Slider(
+                    label="Edge Refine (Guided Radius)",
+                    minimum=0,
+                    maximum=32,
+                    step=1,
+                    value=0,
+                    scale=1,
+                    elem_id="sam3_ms_edge_refine_slider",
+                )
+                edge_smooth_slider = gr.Slider(
+                    label="Edge Smooth (px)",
+                    minimum=0,
+                    maximum=16,
+                    step=1,
+                    value=0,
+                    scale=1,
+                    elem_id="sam3_ms_edge_smooth_slider",
                 )
             with gr.Row():
                 fill_holes_btn = gr.Button(
@@ -394,6 +464,11 @@ def build_tab(
                     scale=1,
                     elem_id="sam3_ms_batch_run_btn",
                 )
+                batch_cancel_btn = gr.Button(
+                    "Cancel Batch",
+                    scale=1,
+                    elem_id="sam3_ms_batch_cancel_btn",
+                )
             with gr.Row():
                 batch_fill_holes_chk = gr.Checkbox(
                     label="Fill Holes",
@@ -415,16 +490,45 @@ def build_tab(
                     value=False,
                     elem_id="sam3_ms_batch_skip_empty",
                 )
+            with gr.Row():
+                batch_recursive_chk = gr.Checkbox(
+                    label="Recursive (Subfolders)",
+                    value=False,
+                    elem_id="sam3_ms_batch_recursive",
+                )
+                batch_resume_chk = gr.Checkbox(
+                    label="Skip Existing (Resume)",
+                    value=False,
+                    elem_id="sam3_ms_batch_resume",
+                )
+                batch_auto_unload_chk = gr.Checkbox(
+                    label="Auto-unload SAM3 after batch",
+                    value=False,
+                    elem_id="sam3_ms_batch_auto_unload",
+                )
+                batch_save_json_chk = gr.Checkbox(
+                    label="Save JSON Metadata",
+                    value=False,
+                    elem_id="sam3_ms_batch_save_json",
+                )
 
         # ===================================================================
         # Event Bindings (M1 - M6)
         # ===================================================================
+
+        def _sync_instances_ui(st: callbacks.MaskStudioState):
+            choices, selected = callbacks.format_instance_choices(callbacks.ensure_state(st))
+            return gr.update(choices=choices, value=selected)
 
         # M1: Image Input, Load from img2img & Color-coding
         input_image.change(
             fn=callbacks.on_image_Input_change,
             inputs=[input_image, state],
             outputs=[preview_image, state, active_prompts_group, status_bar],
+        ).then(
+            fn=_sync_instances_ui,
+            inputs=[state],
+            outputs=[instances_group],
         )
 
         def _load_img2img_wrapper(canvas_b64: str, st: callbacks.MaskStudioState):
@@ -477,11 +581,19 @@ def build_tab(
             fn=callbacks.on_add_positive,
             inputs=[pos_prompt_input, pos_preset_dropdown, state, ckpt_dropdown],
             outputs=[preview_image, state, active_prompts_group, pos_prompt_input, status_bar],
+        ).then(
+            fn=_sync_instances_ui,
+            inputs=[state],
+            outputs=[instances_group],
         )
         pos_prompt_input.submit(
             fn=callbacks.on_add_positive,
             inputs=[pos_prompt_input, pos_preset_dropdown, state, ckpt_dropdown],
             outputs=[preview_image, state, active_prompts_group, pos_prompt_input, status_bar],
+        ).then(
+            fn=_sync_instances_ui,
+            inputs=[state],
+            outputs=[instances_group],
         )
         add_neg_btn.click(
             fn=callbacks.on_add_negative,
@@ -497,6 +609,15 @@ def build_tab(
             fn=callbacks.on_active_prompts_change,
             inputs=[active_prompts_group, state],
             outputs=[preview_image, state, active_prompts_group, status_bar],
+        ).then(
+            fn=_sync_instances_ui,
+            inputs=[state],
+            outputs=[instances_group],
+        )
+        instances_group.input(
+            fn=callbacks.on_instances_change,
+            inputs=[instances_group, state],
+            outputs=[preview_image, state, status_bar],
         )
         save_preset_btn.click(
             fn=callbacks.on_save_custom_preset,
@@ -530,18 +651,38 @@ def build_tab(
         )
         brush_payload_box.change(
             fn=callbacks.on_brush_stroke,
-            inputs=[brush_payload_box, click_mode_radio, brush_size_slider, state],
+            inputs=[brush_payload_box, click_mode_radio, brush_size_slider, state, brush_hardness_slider],
             outputs=[preview_image, state, active_prompts_group, grow_slider, status_bar],
+        )
+        refine_mode_chk.change(
+            fn=callbacks.on_refine_mode_change,
+            inputs=[refine_mode_chk, state],
+            outputs=[state, status_bar],
+        )
+        commit_refine_btn.click(
+            fn=callbacks.on_commit_refine_object,
+            inputs=[state],
+            outputs=[preview_image, state, status_bar],
+        )
+        undo_refine_pt_btn.click(
+            fn=callbacks.on_remove_last_refine_point,
+            inputs=[state, ckpt_dropdown],
+            outputs=[preview_image, state, status_bar],
+        )
+        clear_refine_btn.click(
+            fn=callbacks.on_clear_refine_points,
+            inputs=[state],
+            outputs=[preview_image, state, status_bar],
         )
 
         def _toggle_brush_slider(mode: str):
             is_brush = "Brush" in (mode or "") or "ブラシ" in (mode or "") or "消しゴム" in (mode or "")
-            return gr.update(visible=is_brush)
+            return gr.update(visible=is_brush), gr.update(visible=is_brush)
 
         click_mode_radio.change(
             fn=_toggle_brush_slider,
             inputs=[click_mode_radio],
-            outputs=[brush_size_slider],
+            outputs=[brush_size_slider, brush_hardness_slider],
         )
 
         # M4: Mask Adjustment (Grow / Shrink, Score Threshold, Invert, Clear, Undo, Reset Zoom)
@@ -553,6 +694,16 @@ def build_tab(
         feather_slider.release(
             fn=callbacks.on_feather_change,
             inputs=[feather_slider, state],
+            outputs=[preview_image, state, status_bar],
+        )
+        edge_refine_slider.release(
+            fn=callbacks.on_edge_refine_change,
+            inputs=[edge_refine_slider, state],
+            outputs=[preview_image, state, status_bar],
+        )
+        edge_smooth_slider.release(
+            fn=callbacks.on_edge_smooth_change,
+            inputs=[edge_smooth_slider, state],
             outputs=[preview_image, state, status_bar],
         )
         fill_holes_btn.click(
@@ -685,6 +836,25 @@ def build_tab(
             ),
         )
 
+        zip_event = export_layers_zip_btn.click(
+            fn=callbacks.on_export_layers_zip,
+            inputs=[state],
+            outputs=[status_bar, download_payload_box],
+        )
+        zip_event.then(
+            fn=None,
+            inputs=[download_payload_box],
+            outputs=[],
+            js=(
+                "(payload) => {"
+                " if (window.sam3MaskStudioDownloadPng && payload) {"
+                "   window.sam3MaskStudioDownloadPng(payload);"
+                " }"
+                " return [];"
+                "}"
+            ),
+        )
+
         # M6: Model Setup & VRAM Controls
         check_access_btn.click(
             fn=callbacks.on_check_hf_access,
@@ -720,13 +890,29 @@ def build_tab(
                 min_island_area,
                 batch_invert_chk,
                 batch_skip_empty_chk,
+                batch_recursive_chk,
+                batch_resume_chk,
+                batch_auto_unload_chk,
+                batch_save_json_chk,
+                edge_refine_slider,
+                edge_smooth_slider,
             ],
+            outputs=[status_bar],
+        )
+        batch_cancel_btn.click(
+            fn=callbacks.on_cancel_batch,
+            inputs=[],
             outputs=[status_bar],
         )
         unload_model_btn.click(
             fn=callbacks.on_unload_model,
             inputs=[],
             outputs=[status_bar],
+        )
+        refresh_vram_btn.click(
+            fn=callbacks.on_refresh_vram_status,
+            inputs=[],
+            outputs=[setup_status],
         )
 
     return tab_blocks

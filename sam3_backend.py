@@ -134,6 +134,27 @@ def is_loaded() -> bool:
     return _STATE["model"] is not None and _STATE["processor"] is not None
 
 
+def get_vram_status() -> str:
+    """Return human-readable model & CUDA VRAM status string."""
+    loaded = is_loaded()
+    ckpt_name = Path(_STATE["ckpt_path"]).name if _STATE.get("ckpt_path") else None
+    model_str = f"Loaded (`{ckpt_name}`)" if loaded and ckpt_name else ("Loaded" if loaded else "Unloaded")
+    cached_img = _STATE.get("image_size")
+    cache_str = f" | Cached Image: {cached_img[0]}x{cached_img[1]}" if cached_img else ""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info()
+            used_gb = (total_b - free_b) / (1024 ** 3)
+            total_gb = total_b / (1024 ** 3)
+            alloc_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            return f"Model: {model_str}{cache_str} | VRAM: {used_gb:.2f} / {total_gb:.2f} GB (PyTorch alloc: {alloc_gb:.2f} GB)"
+    except Exception:
+        pass
+    return f"Model: {model_str}{cache_str}"
+
+
 def unload_model() -> tuple[bool, str]:
     """Unload SAM3 model and free CUDA cache."""
     with _LOCK:
@@ -272,14 +293,14 @@ def _get_or_set_image_state(image: Image.Image) -> Any:
     return state
 
 
-def _extract_binary_masks_from_state(
+def _extract_instances_from_state(
     state: Any,
     target_shape: tuple[int, int],
     score_threshold: float = 0.35,
-) -> np.ndarray:
-    """Combine all masks passing `score_threshold` into a single uint8 (0/255) mask."""
+) -> list[dict[str, Any]]:
+    """Extract individual detected instance masks passing `score_threshold`, sorted by score desc."""
     if not isinstance(state, dict) or "masks" not in state or state["masks"] is None:
-        return mask_ops.empty_mask(target_shape)
+        return []
 
     masks_raw = state["masks"]
     scores_raw = state.get("scores")
@@ -302,11 +323,12 @@ def _extract_binary_masks_from_state(
                 arr = arr[:, 0]
             masks_list = [((arr[i] > 0.5).astype(np.uint8)) * 255 for i in range(arr.shape[0])]
     except Exception:
-        return mask_ops.empty_mask(target_shape)
+        return []
 
     if not masks_list:
-        return mask_ops.empty_mask(target_shape)
+        return []
 
+    scores_list: list[float] = [1.0] * len(masks_list)
     if scores_raw is not None:
         try:
             import torch
@@ -316,30 +338,48 @@ def _extract_binary_masks_from_state(
             else:
                 scores_np = np.asarray(scores_raw, dtype=np.float32).reshape(-1)
             if len(scores_np) == len(masks_list):
-                masks_list = [
-                    m for m, s in zip(masks_list, scores_np) if float(s) >= float(score_threshold)
-                ]
-                if not masks_list:
-                    return mask_ops.empty_mask(target_shape)
+                scores_list = [float(s) for s in scores_np]
         except Exception:
             pass
 
-    return mask_ops.union_masks(masks_list, shape=target_shape)
+    instances: list[dict[str, Any]] = []
+    for idx, (m, s) in enumerate(zip(masks_list, scores_list)):
+        if s >= float(score_threshold):
+            bm = mask_ops.ensure_binary_mask(m, shape=target_shape)
+            if bm.any():
+                instances.append({"index": idx + 1, "score": float(s), "mask": bm})
+
+    instances.sort(key=lambda item: item["score"], reverse=True)
+    for rank, item in enumerate(instances, start=1):
+        item["index"] = rank
+    return instances
 
 
-def predict_text_mask(
+def _extract_binary_masks_from_state(
+    state: Any,
+    target_shape: tuple[int, int],
+    score_threshold: float = 0.35,
+) -> np.ndarray:
+    """Combine all masks passing `score_threshold` into a single uint8 (0/255) mask."""
+    instances = _extract_instances_from_state(state, target_shape=target_shape, score_threshold=score_threshold)
+    if not instances:
+        return mask_ops.empty_mask(target_shape)
+    return mask_ops.union_masks([inst["mask"] for inst in instances], shape=target_shape)
+
+
+def predict_text_instances(
     image: Image.Image,
     prompt: str,
     *,
     score_threshold: float = 0.35,
     ckpt_name: str | None = None,
-) -> np.ndarray:
-    """Run SAM3 text-prompt segmentation and return a 2D uint8 (0/255) mask."""
+) -> list[dict[str, Any]]:
+    """Run SAM3 text-prompt segmentation and return per-instance dicts `{'index', 'score', 'mask'}`."""
     clean_prompt = (prompt or "").strip()
     w, h = image.size
     target_shape = (h, w)
     if not clean_prompt:
-        return mask_ops.empty_mask(target_shape)
+        return []
 
     with _LOCK:
         ok, msg = ensure_loaded(ckpt_name)
@@ -360,7 +400,25 @@ def predict_text_mask(
         finally:
             processor.confidence_threshold = old_thr
 
-        return _extract_binary_masks_from_state(state, target_shape=target_shape, score_threshold=score_threshold)
+        return _extract_instances_from_state(state, target_shape=target_shape, score_threshold=score_threshold)
+
+
+def predict_text_mask(
+    image: Image.Image,
+    prompt: str,
+    *,
+    score_threshold: float = 0.35,
+    ckpt_name: str | None = None,
+) -> np.ndarray:
+    """Run SAM3 text-prompt segmentation and return a 2D uint8 (0/255) mask."""
+    w, h = image.size
+    target_shape = (h, w)
+    instances = predict_text_instances(
+        image, prompt, score_threshold=score_threshold, ckpt_name=ckpt_name
+    )
+    if not instances:
+        return mask_ops.empty_mask(target_shape)
+    return mask_ops.union_masks([inst["mask"] for inst in instances], shape=target_shape)
 
 
 def predict_point_mask(

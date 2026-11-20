@@ -50,11 +50,30 @@ def _load_lang_dict(lang: str) -> dict[str, str]:
     return _CACHE[lang]
 
 
+_EN_DEFAULTS: dict[str, str] = {
+    "status.instances_updated": "Updated instances ({kept}/{total} active).",
+    "status.refine_point_added": "Added refine point ({mode}: {x}, {y}; {count} pts).",
+    "status.refine_mode_on": "Multi-point Object Refine enabled (Left-click=Add, Right-click=Exclude).",
+    "status.refine_mode_off": "Multi-point Object Refine disabled.",
+    "status.refine_empty": "No active refine points or mask.",
+    "status.refine_committed": "Committed refined object mask.",
+    "status.refine_point_removed": "Removed last refine point ({count} remaining).",
+    "status.refine_cleared": "Cleared refine points.",
+    "status.edge_refine_applied": "Applied Guided Edge Refine (radius: {radius}).",
+    "status.edge_smooth_applied": "Applied Edge Smooth ({px} px).",
+    "status.layers_zip_exported": "Exported layers ZIP: {path} ({count} layers).",
+    "status.batch_cancelling": "Batch cancellation requested...",
+    "status.batch_complete": "Batch complete: {processed} saved (empty: {empty}, errors: {errors}) -> {out_dir}",
+    "status.batch_cancelled": "Batch cancelled: {processed} saved (skipped: {skipped}, empty: {empty}, errors: {errors}) -> {out_dir}",
+    "status.batch_complete_resumed": "Batch complete: {processed} saved (skipped existing: {skipped}, empty: {empty}, errors: {errors}) -> {out_dir}",
+}
+
+
 def t(key: str, **kwargs: Any) -> str:
-    """Translate `key` using the active language JSON, falling back to `key` itself."""
+    """Translate `key` using the active language JSON, falling back to English defaults or `key`."""
     lang = get_active_language()
     mapping = _load_lang_dict(lang)
-    template = mapping.get(key, key)
+    template = mapping.get(key) or _EN_DEFAULTS.get(key, key)
     if kwargs:
         try:
             return template.format(**kwargs)
